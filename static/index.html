@@ -46,7 +46,8 @@
     </aside>
     <div class="centercol">
       <section class="panel orbit-panel"><div class="panel-title"><div><h2>궤도 상황도</h2><span id="selectedLabel" class="muted">K-LEO 001</span></div><div class="segmented"><button id="globeView" class="active" aria-pressed="true">지구본</button><button id="mapView" aria-pressed="false">평면도</button></div></div>
-        <div class="orbit-wrap"><canvas id="orbitCanvas" aria-label="위성 위치와 선택 위성의 향후 한 궤도 지상궤적. 위성 목록으로도 선택할 수 있습니다."></canvas><div class="map-caption">선택 위성의 향후 1주기 지상궤적<br><span>지구본 드래그로 회전 · 위성 클릭으로 선택</span></div></div>
+        <div class="earth-controls"><span id="earthStyleLabel">지구 표시</span><div class="segmented" role="group" aria-labelledby="earthStyleLabel"><button id="outlineStyle" type="button" aria-pressed="false">윤곽선</button><button id="imageStyle" type="button" class="active" aria-pressed="true">지구 이미지</button></div></div>
+        <div class="orbit-wrap"><canvas id="orbitCanvas" aria-label="위성 위치와 선택 위성의 향후 한 궤도 지상궤적. 위성 목록으로도 선택할 수 있습니다."></canvas></div><div class="map-caption">선택 위성의 향후 1주기 지상궤적<br><span id="orbitHint">지구본 드래그로 회전 · 위성 클릭으로 선택</span></div>
         <div class="legend"><span><b class="dot normal"></b>정상</span><span><b class="dot warning"></b>관심</span><span><b class="dot critical"></b>경고</span><span><b class="dot selected"></b>선택 위성</span><span class="muted">구면 지구 · 간략 원궤도</span></div>
       </section>
       <section class="panel fleet-panel"><div class="panel-title"><h2>위성군 상태</h2><select id="filter" aria-label="위성 상태 필터"><option value="all">전체 위성</option><option value="anomaly">이상 위성</option><option value="visible">대전 가시</option></select></div><div id="fleet" class="fleet" aria-label="위성 선택 목록"></div><p id="fleetEmpty" class="muted" hidden>이 조건에 해당하는 위성이 없습니다.</p></section>
