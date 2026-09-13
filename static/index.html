@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#080f1d">
+  <title>AI 위성 관제 실험실 · ORBIT LAB</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="brandmark">◎</span><div><strong>ORBIT LAB</strong><span>AI 위성 관제 실험실</span></div></div>
+  <div class="topmeta"><span class="mode">모의 관제</span><span id="connection">엔진 연결 중</span><button id="guideButton" class="quiet">모델 안내</button></div>
+</header>
+<main>
+  <div class="workspace-head"><div><p class="eyebrow">MISSION CONTROL / K-LEO</p><h1>위성군을 관찰하고, 대응을 실험하세요.</h1></div>
+    <div class="time-controls"><div class="clock"><small>시뮬레이션 경과</small><strong id="clock">00:00:00</strong></div><select id="speed" aria-label="시뮬레이션 재생 속도"><option value="10">10×</option><option value="30" selected>30×</option><option value="60">60×</option></select><button id="play" class="primary">▶ 시작</button><button id="advance" title="모의 시간을 5분 진행">+5분</button></div>
+  </div>
+  <div id="notice" role="status" aria-live="polite" hidden></div>
+  <section class="kpis" aria-label="위성군 요약">
+    <article><span>운용 위성</span><strong id="total">—</strong><small id="orbitInfo">Walker Delta</small></article>
+    <article><span>상태 정상</span><strong id="normal" class="green">—</strong><small>AI·규칙 기준</small></article>
+    <article><span>관심 / 경고</span><strong><b id="warning" class="amber">—</b><i>/</i><b id="critical" class="red">—</b></strong><small>텔레메트리 이상</small></article>
+    <article><span>대전 가시 위성</span><strong id="visible">—</strong><small id="elevationInfo">최소 앙각 10°</small></article>
+    <article><span>평균 처리용량 지수</span><strong id="capacity">—</strong><small>합성 서비스 지표 · %</small></article>
+  </section>
+  <div class="layout">
+    <aside class="leftcol">
+      <section class="panel"><div class="panel-title"><h2>실험 설정</h2><span class="section-no">01</span></div>
+        <form id="configForm">
+          <label>궤도 고도 <span>km</span><select name="altitude"><option>500</option><option>888</option><option selected>1280</option></select></label>
+          <label>경사각 <span>°</span><input name="inclination" type="number" min="0" max="98" step="0.1" value="42" required></label>
+          <div class="pair"><label>궤도면 수<input name="planes" type="number" min="1" max="32" step="1" value="8" required></label><label>면당 위성<input name="per_plane" type="number" min="1" max="64" step="1" value="16" required></label></div>
+          <div class="pair"><label>Walker F<input name="phasing" type="number" min="0" max="31" step="1" value="1" required></label><label>최소 앙각 °<input name="min_elevation" type="number" min="0" max="60" step="1" value="10" required></label></div>
+          <button type="submit" class="wide">설정 적용 · 실험 초기화</button>
+        </form>
+      </section>
+      <section class="panel"><div class="panel-title"><h2>장애 주입</h2><span class="section-no">02</span></div><p class="muted">선택 위성에 장애를 발생시켜 탐지와 복구를 시험합니다.</p>
+        <label>대상 위성<select id="satSelect" aria-label="선택 위성"></select></label>
+        <label>장애 유형<select id="faultKind"><option value="thermal">탑재체 과열</option><option value="battery">배터리 저하</option><option value="attitude">자세 불안정</option><option value="link">통신 품질 저하</option><option value="cpu">탑재컴퓨터 과부하</option></select></label>
+        <label>강도 <output id="severityValue">100%</output><input id="severity" type="range" min="20" max="100" value="100" step="10"></label>
+        <button id="inject" class="danger wide">＋ 장애 주입</button>
+        <button id="demo" class="quiet wide">과열 대응 예제 불러오기</button>
+      </section>
+      <section class="panel compact"><h2>실험 데이터</h2><div class="export-buttons"><button id="csv">CSV 저장</button><button id="save">실험 저장</button><button id="load">실험 불러오기</button></div><input id="file" type="file" accept=".json,application/json" hidden><p class="footnote">실험은 이 브라우저에서만 유지됩니다. 종료 전 JSON으로 저장하세요.</p></section>
+    </aside>
+    <div class="centercol">
+      <section class="panel orbit-panel"><div class="panel-title"><div><h2>궤도 상황도</h2><span id="selectedLabel" class="muted">K-LEO 001</span></div><div class="segmented"><button id="globeView" class="active" aria-pressed="true">지구본</button><button id="mapView" aria-pressed="false">평면도</button></div></div>
+        <div class="orbit-wrap"><canvas id="orbitCanvas" aria-label="위성 위치와 선택 위성의 향후 한 궤도 지상궤적. 위성 목록으로도 선택할 수 있습니다."></canvas><div class="map-caption">선택 위성의 향후 1주기 지상궤적<br><span>지구본 드래그로 회전 · 위성 클릭으로 선택</span></div></div>
+        <div class="legend"><span><b class="dot normal"></b>정상</span><span><b class="dot warning"></b>관심</span><span><b class="dot critical"></b>경고</span><span><b class="dot selected"></b>선택 위성</span><span class="muted">구면 지구 · 간략 원궤도</span></div>
+      </section>
+      <section class="panel fleet-panel"><div class="panel-title"><h2>위성군 상태</h2><select id="filter" aria-label="위성 상태 필터"><option value="all">전체 위성</option><option value="anomaly">이상 위성</option><option value="visible">대전 가시</option></select></div><div id="fleet" class="fleet" aria-label="위성 선택 목록"></div><p id="fleetEmpty" class="muted" hidden>이 조건에 해당하는 위성이 없습니다.</p></section>
+      <section class="panel telemetry-panel"><div class="panel-title"><h2>선택 위성 텔레메트리</h2><span class="muted">최근 20분 · 모의 시간</span></div><div id="metrics" class="metrics"></div>
+        <div class="chart-heading"><select id="metric" aria-label="차트 표시 지표"><option value="temperature">탑재체 온도 °C</option><option value="battery">배터리 잔량 %</option><option value="cpu">CPU 사용률 %</option><option value="pointing">지향 오차 °</option><option value="packet_loss">패킷 손실 %</option><option value="wheel">휠 속도 rpm</option><option value="risk">AI 이상지수</option><option value="capacity">처리용량 지수 %</option></select><div class="chart-legend"><span class="cyan">━ 실제 모의 결과</span><span class="muted">┄ 미대응 가정</span></div></div>
+        <canvas id="chartCanvas" aria-label="선택 지표의 모의 대응 전후 시계열"></canvas><div id="comparison" class="comparison">대응을 실행하면 같은 조건의 미대응 결과와 비교합니다.</div>
+      </section>
+    </div>
+    <aside class="rightcol">
+      <section class="panel ai-panel"><div class="panel-title"><h2>AI 상태 분석</h2><span class="ai-badge">IFOREST</span></div><div class="risk-row"><div><span class="muted">상대 이상지수</span><strong id="risk">—<small>/100</small></strong></div><span id="statusBadge" class="badge normal">분석 중</span></div><div class="risk-scale"><div id="riskBar"></div></div><p class="footnote">70 이상 관심 · 고장 확률이 아닌 패턴 이탈 정도</p>
+        <h3>정상 분포와의 편차</h3><div id="contributors"></div><p class="footnote">표준편차 단위의 보조 설명이며 AI의 인과 해석은 아닙니다.</p>
+        <div class="divider"></div><h3>관측 근거와 대응 권고</h3><div id="recommendations"></div>
+      </section>
+      <section class="panel"><div class="panel-title"><h2>지상국 가시성</h2><span class="section-no">LOS</span></div><div id="stations"></div><p class="footnote">좌측: 가시 위성 수 · 우측: 처리용량 지수 50 이상인 가시 위성 수. 위치와 앙각만 반영합니다.</p></section>
+      <section class="panel"><div class="panel-title"><h2>실험 이벤트</h2><span id="eventCount" class="muted">0</span></div><div id="events" class="events"><p class="muted">아직 이벤트가 없습니다.</p></div></section>
+    </aside>
+  </div>
+  <footer>합성 텔레메트리와 간략 궤도 기반 실험 도구입니다. 실제 위성 연결·명령 전송 기능은 없습니다.</footer>
+</main>
+<dialog id="guide"><div class="dialog-head"><h2>이 실험실에서 계산하는 것</h2><button id="closeGuide" aria-label="안내 닫기">닫기</button></div><p>Python이 위성 위치·텔레메트리·이상 탐지를 계산하고, 브라우저가 시각화합니다. 외부 AI API 키 없이 실행됩니다.</p><h3>궤도와 가시성</h3><p>Walker Delta T/P/F 원궤도와 지구 자전, 구면 지구의 시선 앙각을 계산합니다. 초기 지구 자전각은 임의 기준입니다. TLE, SGP4, J2, 실제 시각의 궤도예측, 링크버짓은 포함하지 않습니다.</p><h3>AI와 권고</h3><p>Isolation Forest는 합성 정상 표본 6,000개로 학습합니다. 상대 이상지수는 별도 정상 표본으로 보정하며 고장 확률·진단 정확도를 뜻하지 않습니다. 대응 권고는 관측값의 임계값 규칙으로 생성합니다.</p><h3>대응 효과 비교</h3><p>장애와 대응의 효과는 설명을 위한 합성 수식입니다. 동일 난수·동일 시간의 ‘대응 실행’과 ‘미대응’ 결과를 비교합니다. 처리용량 지수는 예시 지표이며 망 서비스 가용도나 실제 Gbps가 아닙니다.</p><h3>간단히 시작하기</h3><p>‘과열 대응 예제 불러오기’ → AI 권고의 ‘모의 실행’ → ‘+5분’을 눌러 변화를 비교하세요. 재시작 전에는 실험 저장 버튼으로 JSON을 내려받으세요.</p></dialog>
+</body></html>

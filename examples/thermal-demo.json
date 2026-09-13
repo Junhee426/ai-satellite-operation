@@ -1,0 +1,26 @@
+{
+  "format": "orbit-lab-v1",
+  "simulation": {
+    "config": {
+      "altitude": 1280,
+      "inclination": 42,
+      "planes": 8,
+      "per_plane": 16,
+      "phasing": 1,
+      "min_elevation": 10
+    },
+    "elapsed": 600.0,
+    "seed": 42,
+    "selected": 0,
+    "faults": [
+      {
+        "id": "demo-thermal",
+        "satellite": 0,
+        "kind": "thermal",
+        "at": 180.0,
+        "severity": 1.0
+      }
+    ],
+    "actions": []
+  }
+}
