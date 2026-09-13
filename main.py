@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from engine import ACTIONS, FAULTS, FIELDS, detector, snapshot
 
 BASE = Path(__file__).resolve().parent
+MAX_BODY_BYTES = 65536
 
 
 class StrictModel(BaseModel):
@@ -92,11 +93,20 @@ app = FastAPI(title='AI 위성 관제 실험실', version='1.0.0', lifespan=life
 
 @app.middleware('http')
 async def bounds(request: Request, call_next):
-    # Only numeric simulation input is accepted. Limit HTTP bodies before parsing.
+    # Only numeric simulation input is accepted. Limit HTTP bodies before parsing,
+    # and reject oversized bodies without buffering them fully first.
     if request.method == 'POST':
-        body = await request.body()
-        if len(body) > 65536:
+        content_length = request.headers.get('content-length')
+        if content_length is not None and content_length.isdigit() and int(content_length) > MAX_BODY_BYTES:
             return JSONResponse({'detail':'요청 크기 제한은 64 KB입니다.'},status_code=413)
+        body = bytearray()
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > MAX_BODY_BYTES:
+                return JSONResponse({'detail':'요청 크기 제한은 64 KB입니다.'},status_code=413)
+        # Cache like Request.body() would, so downstream parsing sees the same bytes
+        # we already read (BaseHTTPMiddleware forwards a Request's cached _body as-is).
+        request._body = bytes(body)
     response = await call_next(request)
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Referrer-Policy'] = 'same-origin'
