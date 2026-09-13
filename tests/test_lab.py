@@ -2,10 +2,11 @@ import copy
 import csv
 import io
 import math
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
-from engine import EARTH_KM, MU, ROTATION, FAULTS, geometry, snapshot
+from engine import EARTH_KM, MU, ROTATION, FAULTS, detector, geometry, snapshot
 from main import app, Configuration, SimulationRequest
 
 
@@ -107,3 +108,48 @@ def test_nominal_false_alerts_are_not_hidden():
     result=snapshot(SimulationRequest(elapsed=1800,seed=7))
     assert result['summary']['normal']>120
     assert all(s['status']=='normal' or s['alerts'] for s in result['satellites'])
+
+
+def test_isolation_forest_is_trained_once_not_per_request(client):
+    """Guards the module-level lru_cache: the 6000/4000-sample Isolation Forest
+    fit+calibration must happen at most once per process, never per request.
+    The app's lifespan already warms this at startup, so cache_info should show
+    zero additional misses (and the exact same fitted model object) across many
+    simulate calls of varying shapes."""
+    model_before, *_ = detector()
+    info_before = detector.cache_info()
+    assert info_before.currsize == 1  # already warmed by the lifespan handler
+    for planes, per_plane, elapsed in [(4,16,0), (8,16,3600), (16,32,86400), (1,1,500)]:
+        r = client.post('/api/simulate', json={'config':{'planes':planes,'per_plane':per_plane,'phasing':0},'elapsed':elapsed})
+        assert r.status_code == 200
+    model_after, *_ = detector()
+    info_after = detector.cache_info()
+    assert info_after.misses == info_before.misses  # no re-fit occurred
+    assert info_after.hits > info_before.hits
+    assert model_after is model_before  # exact same fitted estimator, not a rebuilt copy
+
+
+def test_concurrent_max_size_requests_are_race_free_and_deterministic(client):
+    """No per-experiment server state exists (stateless-by-design), so concurrent
+    requests from different simulated users must never leak into each other's
+    results. Fire many parallel requests at the 512-satellite/24h ceiling -
+    some sharing a seed, some not - through the shared threadpool-executed sync
+    endpoint, and check every response is well-formed and seed-determined
+    results agree byte-for-byte regardless of what else ran concurrently."""
+    base = {'config':{'planes':32,'per_plane':16},'elapsed':86400,'selected':0}
+    payloads = [dict(base, seed=(i % 3)+1) for i in range(24)]
+
+    def call(payload):
+        r = client.post('/api/simulate', json=payload)
+        assert r.status_code == 200
+        return payload['seed'], r.json()
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(call, payloads))
+
+    by_seed = {}
+    for seed, data in results:
+        assert len(data['satellites']) == 512
+        by_seed.setdefault(seed, []).append(data)
+    for seed, datas in by_seed.items():
+        assert all(d == datas[0] for d in datas), f'seed {seed} results diverged under concurrency'
