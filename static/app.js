@@ -5,6 +5,57 @@ const defaults = {config:{altitude:1280,inclination:42,planes:8,per_plane:16,pha
 let state=clone(defaults), data=null, catalog=null, busy=false, playing=false, timer=null;
 let view='globe', camera={lon:103,lat:22}, hitPoints=[], drag=null, world=[];
 const colors={normal:'#6addb4',warning:'#ffc570',critical:'#ff7d8b',selected:'#59d8ed'};
+
+// Shared Earth globe renderer (identical across K-LEO services): textured orthographic
+// sphere using the same Blue Marble texture, projection math, and atmosphere glow.
+let earthTexture=null;const globeCache={};
+function observerFrame(latDeg,lonDeg){
+  const lat=latDeg*Math.PI/180,lon=lonDeg*Math.PI/180;
+  return{up:[Math.cos(lat)*Math.cos(lon),Math.cos(lat)*Math.sin(lon),Math.sin(lat)],
+    east:[-Math.sin(lon),Math.cos(lon),0],
+    north:[-Math.sin(lat)*Math.cos(lon),-Math.sin(lat)*Math.sin(lon),Math.cos(lat)]};
+}
+(function loadEarthTexture(){
+  const img=new Image();
+  img.onload=()=>{
+    const off=document.createElement('canvas');off.width=img.width;off.height=img.height;
+    const c=off.getContext('2d',{willReadFrequently:true});c.drawImage(img,0,0);
+    earthTexture={width:img.width,height:img.height,data:c.getImageData(0,0,img.width,img.height).data};
+    globeCache.key=null;drawOrbit();
+  };
+  img.src='/static/earth.jpg';
+})();
+function paintGlobeTexture(ctx,cx,cy,radius,dpr,latDeg,lonDeg){
+  const size=Math.max(32,Math.min(650,Math.round(radius*2*dpr)));
+  const key=[size,latDeg,lonDeg,!!earthTexture].join(':');
+  if(globeCache.key!==key){
+    const off=document.createElement('canvas');off.width=off.height=size;
+    const octx=off.getContext('2d');
+    const pixels=octx.createImageData(size,size),d=pixels.data,r=size/2,frame=observerFrame(latDeg,lonDeg),tex=earthTexture;
+    for(let y=0;y<size;y++)for(let x=0;x<size;x++){
+      const ex=(x+.5-r)/r,ny=-(y+.5-r)/r,dist=ex*ex+ny*ny;
+      if(dist>1)continue;
+      const uz=Math.sqrt(1-dist),index=(y*size+x)*4;
+      const worldX=frame.east[0]*ex+frame.north[0]*ny+frame.up[0]*uz;
+      const worldY=frame.east[1]*ex+frame.north[1]*ny+frame.up[1]*uz;
+      const worldZ=frame.east[2]*ex+frame.north[2]*ny+frame.up[2]*uz;
+      const lon=Math.atan2(worldY,worldX),lat=Math.asin(Math.max(-1,Math.min(1,worldZ)));
+      const light=.42+.58*uz;
+      if(tex){
+        const tx=Math.min(tex.width-1,Math.floor((lon/(2*Math.PI)+.5)*tex.width));
+        const ty=Math.min(tex.height-1,Math.max(0,Math.floor((.5-lat/Math.PI)*tex.height)));
+        const offset=(ty*tex.width+tx)*4;
+        d[index]=tex.data[offset]*light;d[index+1]=tex.data[offset+1]*light;d[index+2]=tex.data[offset+2]*light;
+      }else{d[index]=20*light;d[index+1]=75*light;d[index+2]=120*light;}
+      d[index+3]=Math.min(255,(1-dist)*size*180);
+    }
+    octx.putImageData(pixels,0,0);globeCache.key=key;globeCache.canvas=off;
+  }
+  const gradient=ctx.createRadialGradient(cx,cy,radius*.96,cx,cy,radius*1.09);
+  gradient.addColorStop(0,'rgba(43,150,201,.24)');gradient.addColorStop(1,'rgba(43,150,201,0)');
+  ctx.fillStyle=gradient;ctx.beginPath();ctx.arc(cx,cy,radius*1.09,0,Math.PI*2);ctx.fill();
+  ctx.drawImage(globeCache.canvas,cx-radius,cy-radius,radius*2,radius*2);
+}
 const statusNames={normal:'정상',warning:'관심',critical:'경고'};
 const specs={battery:['배터리','%',1],temperature:['탑재체 온도','°C',1],cpu:['CPU','%',1],pointing:['지향 오차','°',2],packet_loss:['패킷 손실','%',1],wheel:['휠 속도','rpm',0],risk:['AI 이상지수','',1],capacity:['처리용량 지수','%',1]};
 const escape = s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -100,9 +151,9 @@ function renderFleet(){
     b.title=`${sat.name} · ${statusNames[sat.status]} · 이상지수 ${sat.risk}`;b.setAttribute('aria-label',b.title);b.setAttribute('aria-pressed',String(sat.id===state.selected));b.onclick=()=>selectSatellite(sat.id);fragment.append(b);
   }$('fleetEmpty').hidden=fragment.childNodes.length>0;$('fleet').replaceChildren(fragment);
 }
-function canvasSize(canvas){const r=canvas.getBoundingClientRect(),dpr=Math.min(devicePixelRatio||1,2);canvas.width=Math.round(r.width*dpr);canvas.height=Math.round(r.height*dpr);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);return {ctx,w:r.width,h:r.height};}
+function canvasSize(canvas){const r=canvas.getBoundingClientRect(),dpr=Math.min(devicePixelRatio||1,2);canvas.width=Math.round(r.width*dpr);canvas.height=Math.round(r.height*dpr);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);return {ctx,w:r.width,h:r.height,dpr};}
 function drawOrbit(){
-  if(!data)return;const {ctx,w,h}=canvasSize($('orbitCanvas'));if(!w)return;
+  if(!data)return;const {ctx,w,h,dpr}=canvasSize($('orbitCanvas'));if(!w)return;
   const radius=Math.min(w*.40,h*.43),cx=w/2,cy=h*.46;const d=Math.PI/180;
   const project=(lat,lon)=>{
     if(view==='map')return {x:18+(lon+180)/360*(w-36),y:20+(90-lat)/180*(h-60),front:true};
@@ -110,10 +161,7 @@ function drawOrbit(){
     const z=Math.sin(c)*Math.sin(a)+Math.cos(c)*Math.cos(a)*Math.cos(b);
     return{x:cx+radius*Math.cos(a)*Math.sin(b),y:cy-radius*(Math.cos(c)*Math.sin(a)-Math.sin(c)*Math.cos(a)*Math.cos(b)),front:z>=0,z};
   };
-  if(view==='globe'){
-    const glow=ctx.createRadialGradient(cx,cy,radius*.92,cx,cy,radius*1.13);glow.addColorStop(0,'#1c56704d');glow.addColorStop(1,'#10203600');ctx.fillStyle=glow;ctx.beginPath();ctx.arc(cx,cy,radius*1.13,0,Math.PI*2);ctx.fill();
-    const fill=ctx.createRadialGradient(cx-radius*.4,cy-radius*.4,0,cx,cy,radius);fill.addColorStop(0,'#143952');fill.addColorStop(.7,'#0e273c');fill.addColorStop(1,'#0b192b');ctx.fillStyle=fill;ctx.beginPath();ctx.arc(cx,cy,radius,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#37718a';ctx.lineWidth=1;ctx.stroke();
-  }
+  if(view==='globe')paintGlobeTexture(ctx,cx,cy,radius,dpr,camera.lat,camera.lon);
   function line(points,color,width=1,dash=[]){ctx.beginPath();ctx.strokeStyle=color;ctx.lineWidth=width;ctx.setLineDash(dash);let prev=null;for(const [a,b] of points){const p=project(a,b);if(p.front){if(!prev||Math.abs(p.x-prev.x)>w/2)ctx.moveTo(p.x,p.y);else ctx.lineTo(p.x,p.y);prev=p;}else prev=null;}ctx.stroke();ctx.setLineDash([]);}
   for(let lat=-60;lat<=60;lat+=30)line(Array.from({length:181},(_,i)=>[lat,-180+i*2]),lat===0?'#34607a':'#25435a',.7);
   for(let lon=-180;lon<180;lon+=30)line(Array.from({length:91},(_,i)=>[-90+i*2,lon]),'#25435a',.7);
