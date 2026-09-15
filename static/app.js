@@ -223,5 +223,42 @@ new ResizeObserver(()=>{drawOrbit();drawChart();}).observe($('orbitCanvas'));
 new ResizeObserver(()=>drawChart()).observe($('chartCanvas'));
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&playing){pause();notice('화면을 벗어나 실험을 일시정지했습니다.');}});
 window.addEventListener('beforeunload',e=>{if(state.faults.length){e.preventDefault();e.returnValue='';}});
-async function init(){try{const [r,map]=await Promise.all([fetch('/api/catalog'),fetch('/static/world.json')]);if(!r.ok)throw Error('엔진 연결 실패');catalog=await r.json();if(map.ok)world=(await map.json()).lines;await refresh();}catch(e){notice('서버 연결에 실패했습니다. 새로고침해 다시 시도하세요.',true);$('connection').textContent='연결 실패';}}
+function showMapError(){
+  // The map outline overlay is purely decorative (orbit/telemetry/AI panels
+  // read from `data`/`catalog`, never from `world`), so a failed or malformed
+  // world.json must only degrade this one visual, never abort the app.
+  const el=$('mapError');if(!el)return;
+  el.textContent='지도 데이터를 불러오지 못했습니다. 위성 목록·텔레메트리·실험 기능은 정상 동작합니다.';
+  el.hidden=false;
+}
+async function loadCatalog(){
+  const r=await fetch('/api/catalog');
+  if(!r.ok)throw Error('엔진 연결 실패');
+  catalog=await r.json();
+}
+async function loadMap(){
+  try{
+    const map=await fetch('/static/world.json');
+    if(!map.ok)throw Error(`지도 응답 오류 (HTTP ${map.status})`);
+    const parsed=await map.json();
+    world=Array.isArray(parsed.lines)?parsed.lines:[];
+  }catch(e){
+    // Network failure or malformed JSON in world.json: keep the map panel
+    // degraded (no coastline outlines) instead of failing the whole refresh
+    // cycle. Telemetry, experiments and export must stay usable.
+    world=[];
+    showMapError();
+  }
+}
+async function init(){
+  try{
+    await loadCatalog();
+  }catch(e){
+    notice('서버 연결에 실패했습니다. 새로고침해 다시 시도하세요.',true);
+    $('connection').textContent='연결 실패';
+    return;
+  }
+  await loadMap();
+  await refresh();
+}
 init();
