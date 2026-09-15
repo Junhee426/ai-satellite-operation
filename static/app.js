@@ -64,18 +64,21 @@ const escape = s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'
 const clock = s=>[Math.floor(s/3600),Math.floor(s%3600/60),Math.floor(s%60)].map(x=>String(x).padStart(2,'0')).join(':');
 function notice(message,error=false){$('notice').textContent=message;$('notice').classList.toggle('error',error);$('notice').hidden=!message;}
 function setBusy(v){busy=v;for(const id of ['advance','inject','demo','csv','save','load'])$(id).disabled=v;$('configForm').querySelector('button').disabled=v;document.querySelectorAll('[data-action]').forEach(b=>b.disabled=v);}
-async function request(path,payload){
+async function request(path,payload,responseType='json'){
   const ctrl=new AbortController(),timeout=setTimeout(()=>ctrl.abort(),30000);
   try{
     const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:ctrl.signal});
     if(!r.ok){const e=await r.json().catch(()=>({detail:'서버 응답 오류'}));const message=Array.isArray(e.detail)?e.detail.map(x=>`${x.loc?.slice(1).join('.')}: ${x.msg}`).join(' / '):e.detail;throw Error(message||`HTTP ${r.status}`);}
-    return r;
+    // Keep the abort timer armed through body parsing, not just until headers
+    // arrive: a slow/stalled body read must still be able to time out, and the
+    // timer must only be cleared once the response is fully consumed.
+    return responseType==='blob'?await r.blob():await r.json();
   }finally{clearTimeout(timeout);}
 }
 async function refresh(next=state){
   if(busy)return false;
   setBusy(true);
-  try{const r=await request('/api/simulate',next);data=await r.json();state=clone(next);$('connection').textContent='Python 엔진 연결됨';render();return true;}
+  try{data=await request('/api/simulate',next);state=clone(next);$('connection').textContent='Python 엔진 연결됨';render();return true;}
   catch(e){pause();$('connection').textContent='연결 확인 필요';notice(e.name==='AbortError'?'응답이 지연되었습니다. 잠시 후 다시 시도하세요.':e.message,true);return false;}
   finally{setBusy(false);}
 }
@@ -114,7 +117,7 @@ function setView(){$('orbitCanvas').parentElement.dataset.view=view;for(const [i
 $('guideButton').onclick=()=>$('guide').showModal();$('closeGuide').onclick=()=>$('guide').close();
 function download(blob,name){const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 $('save').onclick=()=>{pause();download(new Blob([JSON.stringify({format:'orbit-lab-v1',simulation:state},null,2)],{type:'application/json'}),'orbit-lab-experiment.json');notice('현재 설정·장애·대응 시각을 저장했습니다.');};
-$('csv').onclick=async()=>{pause();if(busy)return;setBusy(true);try{const r=await request('/api/export',state);download(await r.blob(),'satellite-telemetry.csv');notice('현재 시각의 전체 위성 텔레메트리를 저장했습니다.');}catch(e){notice(e.message,true);}finally{setBusy(false);}};
+$('csv').onclick=async()=>{pause();if(busy)return;setBusy(true);try{const blob=await request('/api/export',state,'blob');download(blob,'satellite-telemetry.csv');notice('현재 시각의 전체 위성 텔레메트리를 저장했습니다.');}catch(e){notice(e.name==='AbortError'?'응답이 지연되었습니다. 잠시 후 다시 시도하세요.':e.message,true);}finally{setBusy(false);}};
 $('load').onclick=()=>$('file').click();
 $('file').onchange=async e=>{pause();const f=e.target.files[0];if(!f)return;try{if(f.size>65536)throw Error('실험 파일은 64 KB 이하여야 합니다.');const parsed=JSON.parse(await f.text());if(parsed.format!=='orbit-lab-v1'||!parsed.simulation)throw Error('ORBIT LAB v1 실험 파일을 선택하세요.');if(await refresh(parsed.simulation)){fillConfig();notice('저장한 실험을 복원했습니다.');}}catch(e){notice(e.message,true);}finally{e.target.value='';}};
 
