@@ -4,6 +4,27 @@ const clone = x => JSON.parse(JSON.stringify(x));
 const defaults = {config:{altitude:1280,inclination:42,planes:8,per_plane:16,phasing:1,min_elevation:10},elapsed:0,seed:42,selected:0,faults:[],actions:[]};
 let state=clone(defaults), data=null, catalog=null, busy=false, playing=false, timer=null;
 let earthStyle='image';
+const lab=OrbitLabState;
+let previousExperiment=null, locallySaved=false;
+function persistExperiment(){
+  try{
+    // Save the recovery point first; never report success after a partial write.
+    if(previousExperiment)localStorage.setItem(lab.PREVIOUS,lab.encode(previousExperiment));
+    localStorage.setItem(lab.CURRENT,lab.encode(state));
+    locallySaved=true;
+    $('saveStatus').textContent=`자동 저장됨 · T+ ${clock(state.elapsed)}`;
+  }catch(e){locallySaved=false;$('saveStatus').textContent='자동 저장 불가 · 실험 저장으로 JSON을 보관하세요.';}
+}
+$('restorePrevious').onclick=async()=>{
+  if(busy||!previousExperiment)return;
+  pause();
+  if(await refresh(clone(previousExperiment),{archive:true})){
+    fillConfig();notice('이전 실험을 복원했습니다. 되돌리기를 다시 누르면 방금 실험으로 돌아갑니다.');
+  }
+};
+$('focusSatellite').onclick=()=>{
+  if(!data)return;camera={lon:data.selected.lon,lat:data.selected.lat};view='globe';setView();
+};
 let view='globe', camera={lon:103,lat:22}, hitPoints=[], drag=null, world=[];
 const colors={normal:'#6addb4',warning:'#ffc570',critical:'#ff7d8b',selected:'#59d8ed'};
 
@@ -63,7 +84,7 @@ const specs={battery:['배터리','%',1],temperature:['탑재체 온도','°C',1
 const escape = s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const clock = s=>[Math.floor(s/3600),Math.floor(s%3600/60),Math.floor(s%60)].map(x=>String(x).padStart(2,'0')).join(':');
 function notice(message,error=false){$('notice').textContent=message;$('notice').classList.toggle('error',error);$('notice').hidden=!message;}
-function setBusy(v){busy=v;for(const id of ['advance','inject','demo','csv','save','load'])$(id).disabled=v;$('configForm').querySelector('button').disabled=v;document.querySelectorAll('[data-action]').forEach(b=>b.disabled=v);}
+function setBusy(v){busy=v;for(const id of ['advance','inject','demo','csv','save','load','satSelect'])$(id).disabled=v;$('configForm').querySelector('button').disabled=v;document.querySelectorAll('[data-action]').forEach(b=>b.disabled=v);$('restorePrevious').disabled=v||!previousExperiment;}
 async function request(path,payload){
   const ctrl=new AbortController(),timeout=setTimeout(()=>ctrl.abort(),30000);
   try{
@@ -72,19 +93,33 @@ async function request(path,payload){
     return r;
   }finally{clearTimeout(timeout);}
 }
-async function refresh(next=state){
+async function refresh(next=state,{archive=false,persist=true}={}){
   if(busy)return false;
   setBusy(true);
-  try{const r=await request('/api/simulate',next);data=await r.json();state=clone(next);$('connection').textContent='Python 엔진 연결됨';render();return true;}
-  catch(e){pause();$('connection').textContent='연결 확인 필요';notice(e.name==='AbortError'?'응답이 지연되었습니다. 잠시 후 다시 시도하세요.':e.message,true);return false;}
+  try{
+    const r=await request('/api/simulate',next),result=await r.json();
+    const validated=clone(lab.normalize(next,defaults));
+    if(archive&&data)previousExperiment=clone(state);
+    data=result;state=validated;locallySaved=false;
+    $('connection').textContent='Python 엔진 연결됨';render();
+    if(persist)persistExperiment();return true;
+  }
+  catch(e){if(data)$('satSelect').value=state.selected;pause();$('connection').textContent='연결 확인 필요';notice(e.name==='AbortError'?'응답이 지연되었습니다. 잠시 후 다시 시도하세요.':e.message,true);return false;}
   finally{setBusy(false);}
 }
 function pause(){playing=false;clearTimeout(timer);$('play').textContent='▶ 시작';}
 function schedule(){clearTimeout(timer);if(!playing)return;timer=setTimeout(async()=>{if(!playing)return;if(!busy){const next=clone(state);next.elapsed=Math.min(86400,next.elapsed+Number($('speed').value));await refresh(next);if(state.elapsed>=86400){pause();notice('24시간 실험이 종료되었습니다. 설정 적용으로 새 실험을 시작하세요.');}}schedule();},1000);}
 $('play').onclick=()=>{if(playing){pause();return;}if(!data||busy){notice('엔진이 준비된 뒤 시작하세요.');return;}if(state.elapsed>=86400){notice('24시간에 도달했습니다. 새 실험을 시작하세요.');return;}playing=true;$('play').textContent='Ⅱ 일시정지';notice('');schedule();};
 $('advance').onclick=async()=>{pause();const next=clone(state);next.elapsed=Math.min(86400,next.elapsed+300);notice('');await refresh(next);};
-function fillConfig(){for(const [k,v] of Object.entries(state.config))$('configForm').elements.namedItem(k).value=v;}
-$('configForm').onsubmit=async e=>{e.preventDefault();pause();const next=clone(defaults);for(const [k,v] of new FormData(e.target))next.config[k]=Number(v);if(await refresh(next)){notice('새 설정으로 실험을 초기화했습니다.');fillConfig();}};
+function fillConfig(){
+  const altitude=$('configForm').elements.namedItem('altitude');
+  altitude.querySelectorAll('[data-custom]').forEach(option=>option.remove());
+  if(!Array.from(altitude.options).some(option=>Number(option.value)===state.config.altitude)){
+    const option=new Option(String(state.config.altitude),String(state.config.altitude));option.dataset.custom='true';altitude.add(option);
+  }
+  for(const [k,v] of Object.entries(state.config))$('configForm').elements.namedItem(k).value=v;
+}
+$('configForm').onsubmit=async e=>{e.preventDefault();pause();const next=clone(defaults);for(const [k,v] of new FormData(e.target))next.config[k]=Number(v);if(await refresh(next,{archive:true})){notice('새 설정을 적용했습니다. 이전 실험으로 되돌릴 수 있습니다.');fillConfig();}};
 $('satSelect').onchange=async e=>{const next=clone(state);next.selected=Number(e.target.value);await refresh(next);};
 async function selectSatellite(id){if(busy)return;const next=clone(state);next.selected=id;await refresh(next);}
 $('severity').oninput=e=>$('severityValue').textContent=e.target.value+'%';
@@ -94,12 +129,12 @@ $('inject').onclick=async()=>{
   const next=clone(state);next.faults.push({id:crypto.randomUUID(),satellite:state.selected,kind,at:state.elapsed,severity:Number($('severity').value)/100});
   if(await refresh(next)){notice(`${data.selected.name}에 ${catalog.faults[kind].name} 장애를 주입했습니다. +5분 또는 시작을 눌러 진행하세요.`);$('metric').value={thermal:'temperature',battery:'battery',attitude:'pointing',link:'packet_loss',cpu:'cpu'}[kind];drawChart();}
 };
-$('demo').onclick=async()=>{pause();const next=clone(defaults);next.elapsed=600;next.faults=[{id:'demo-thermal',satellite:0,kind:'thermal',at:180,severity:1}];if(await refresh(next)){fillConfig();$('metric').value='temperature';drawChart();notice('과열 예제를 불러왔습니다. 오른쪽 권고의 모의 실행 → +5분으로 대응 효과를 확인하세요.');}};
+$('demo').onclick=async()=>{pause();const next=clone(defaults);next.elapsed=600;next.faults=[{id:'demo-thermal',satellite:0,kind:'thermal',at:180,severity:1}];if(await refresh(next,{archive:true})){fillConfig();$('metric').value='temperature';drawChart();notice('과열 예제를 불러왔습니다. 오른쪽 권고의 모의 실행 → +5분으로 대응 효과를 확인하세요.');}};
 async function execute(faultId,kind){
   if(busy)return;pause();const next=clone(state);next.actions.push({fault_id:faultId,kind,at:state.elapsed});
   if(await refresh(next))notice(`${catalog.actions[kind].name} 모의 명령을 실행했습니다. +5분을 눌러 복구 추이를 비교하세요.`);
 }
-$('filter').onchange=renderFleet;$('metric').onchange=drawChart;
+$('filter').onchange=renderFleet;$('fleetSearch').oninput=renderFleet;$('fleetSort').onchange=renderFleet;$('metric').onchange=drawChart;
 $('globeView').onclick=()=>{view='globe';setView();};$('mapView').onclick=()=>{view='map';setView();};
 function setEarthStyle(style){
   earthStyle=style;
@@ -116,7 +151,7 @@ function download(blob,name){const url=URL.createObjectURL(blob);const a=documen
 $('save').onclick=()=>{pause();download(new Blob([JSON.stringify({format:'orbit-lab-v1',simulation:state},null,2)],{type:'application/json'}),'orbit-lab-experiment.json');notice('현재 설정·장애·대응 시각을 저장했습니다.');};
 $('csv').onclick=async()=>{pause();if(busy)return;setBusy(true);try{const r=await request('/api/export',state);download(await r.blob(),'satellite-telemetry.csv');notice('현재 시각의 전체 위성 텔레메트리를 저장했습니다.');}catch(e){notice(e.message,true);}finally{setBusy(false);}};
 $('load').onclick=()=>$('file').click();
-$('file').onchange=async e=>{pause();const f=e.target.files[0];if(!f)return;try{if(f.size>65536)throw Error('실험 파일은 64 KB 이하여야 합니다.');const parsed=JSON.parse(await f.text());if(parsed.format!=='orbit-lab-v1'||!parsed.simulation)throw Error('ORBIT LAB v1 실험 파일을 선택하세요.');if(await refresh(parsed.simulation)){fillConfig();notice('저장한 실험을 복원했습니다.');}}catch(e){notice(e.message,true);}finally{e.target.value='';}};
+$('file').onchange=async e=>{pause();const f=e.target.files[0];if(!f)return;try{if(f.size>65536)throw Error('실험 파일은 64 KB 이하여야 합니다.');const simulation=lab.decode(await f.text());if(await refresh(simulation,{archive:true})){fillConfig();notice('저장한 실험을 복원했습니다.');}}catch(e){notice(e.message,true);}finally{e.target.value='';}};
 
 function render(){
   const s=data.summary,sat=data.selected;$('clock').textContent=clock(state.elapsed);
@@ -156,8 +191,10 @@ function render(){
   renderFleet();drawOrbit();drawChart();
 }
 function renderFleet(){
-  if(!data)return;const mode=$('filter').value,fragment=document.createDocumentFragment();
-  for(const sat of data.satellites){if(mode==='anomaly'&&sat.status==='normal'||mode==='visible'&&!sat.visible)continue;
+  if(!data)return;const fragment=document.createDocumentFragment();
+  const satellites=lab.fleet(data.satellites,{mode:$('filter').value,query:$('fleetSearch').value,sort:$('fleetSort').value});
+  $('fleetCount').textContent=`${satellites.length} / ${data.satellites.length}기 표시 · 선택 ${data.selected.name}`;
+  for(const sat of satellites){
     const b=document.createElement('button');b.textContent=String(sat.id+1).padStart(3,'0');b.className=sat.status+(sat.id===state.selected?' selected':'');
     b.title=`${sat.name} · ${statusNames[sat.status]} · 이상지수 ${sat.risk}`;b.setAttribute('aria-label',b.title);b.setAttribute('aria-pressed',String(sat.id===state.selected));b.onclick=()=>selectSatellite(sat.id);fragment.append(b);
   }$('fleetEmpty').hidden=fragment.childNodes.length>0;$('fleet').replaceChildren(fragment);
@@ -222,6 +259,19 @@ $('orbitCanvas').addEventListener('pointercancel',()=>drag=null);
 new ResizeObserver(()=>{drawOrbit();drawChart();}).observe($('orbitCanvas'));
 new ResizeObserver(()=>drawChart()).observe($('chartCanvas'));
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&playing){pause();notice('화면을 벗어나 실험을 일시정지했습니다.');}});
-window.addEventListener('beforeunload',e=>{if(state.faults.length){e.preventDefault();e.returnValue='';}});
-async function init(){try{const [r,map]=await Promise.all([fetch('/api/catalog'),fetch('/static/world.json')]);if(!r.ok)throw Error('엔진 연결 실패');catalog=await r.json();if(map.ok)world=(await map.json()).lines;await refresh();}catch(e){notice('서버 연결에 실패했습니다. 새로고침해 다시 시도하세요.',true);$('connection').textContent='연결 실패';}}
+window.addEventListener('beforeunload',e=>{if(data&&!locallySaved){e.preventDefault();e.returnValue='';}});
+async function init(){try{const [r,map]=await Promise.all([fetch('/api/catalog'),fetch('/static/world.json')]);if(!r.ok)throw Error('엔진 연결 실패');catalog=await r.json();if(map.ok)world=(await map.json()).lines;
+  let saved=null,storageError=false;
+  try{
+    const raw=localStorage.getItem(lab.CURRENT);if(raw)saved=lab.decode(raw);
+  }catch(e){storageError=true;}
+  try{
+    const raw=localStorage.getItem(lab.PREVIOUS);if(raw)previousExperiment=lab.decode(raw);
+  }catch(e){previousExperiment=null;}
+  if(saved){
+    if(await refresh(saved)){fillConfig();notice('자동 저장된 실험을 복원했습니다. 시작을 누르면 이어서 진행합니다.');}
+    else{await refresh(defaults,{persist:false});notice('자동 저장된 실험을 복원하지 못했습니다. 기존 저장본을 유지한 채 기본 화면을 표시합니다.',true);}
+  }else{await refresh(defaults,{persist:!storageError});if(storageError)notice('자동 저장본을 읽지 못했습니다. 실험 저장으로 JSON을 보관하세요.',true);}
+  if(!locallySaved)$('saveStatus').textContent='자동 저장 확인 필요 · 실험 저장으로 JSON을 보관하세요.';
+  }catch(e){notice('서버 연결에 실패했습니다. 새로고침해 다시 시도하세요.',true);$('connection').textContent='연결 실패';}}
 init();

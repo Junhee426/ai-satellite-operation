@@ -27,7 +27,7 @@ Blueprint 대신 **New → Web Service**로 만들 경우:
 
 Render 환경변수에 기존 `PYTHON_VERSION`이 있으면 `.python-version`보다 우선합니다. 이 프로젝트의 기준은 Python 3.12입니다. Blueprint에는 계산 라이브러리의 과도한 스레드 생성을 피하도록 `OMP_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1`을 넣었습니다.
 
-무료 Render 서비스는 유휴 상태에서 중지될 수 있어 첫 접속이 지연될 수 있습니다. 파일시스템과 메모리를 영구 저장소로 사용하지 않습니다. 본 앱은 서버에 실험별 상태를 보관하지 않고, 브라우저가 요청마다 실험 설정을 전달합니다. 새로고침·탭 종료 전에는 **실험 저장**을 누르세요. 유료 플랜은 필요할 때 사용자가 선택할 수 있습니다.
+무료 Render 서비스는 유휴 상태에서 중지될 수 있어 첫 접속이 지연될 수 있습니다. 파일시스템과 메모리를 영구 저장소로 사용하지 않습니다. 본 앱은 서버에 실험별 상태를 보관하지 않고, 브라우저가 요청마다 실험 설정을 전달합니다. 성공한 계산 결과의 실험 입력은 브라우저에 자동 저장하고 재접속 시 복원합니다. 장기 보관할 때는 **실험 저장**으로 JSON을 내려받으세요. 유료 플랜은 필요할 때 사용자가 선택할 수 있습니다.
 
 공식 문서: [FastAPI 배포](https://render.com/docs/deploy-fastapi), [Blueprint 설정](https://render.com/docs/blueprint-spec), [Python 버전 지정](https://render.com/docs/python-version), [무료 서비스 조건](https://render.com/docs/free).
 
@@ -68,7 +68,7 @@ macOS / Linux:
 5. 텔레메트리 그래프의 청록색 선과 ‘미대응 가정’ 점선을 비교합니다.
 6. 처리용량 지표로 전환하여 부하 축소의 서비스 비용도 살펴봅니다.
 
-실험 예제 버튼과 설정 적용 버튼은 현재 실험을 초기화합니다. 보관하려면 먼저 JSON으로 저장하세요.
+실험 예제·설정 적용·파일 불러오기가 성공하면 직전 실험을 한 단계 보관합니다. **이전 실험으로 되돌리기**로 복원하고, 다시 누르면 두 실험 사이를 전환할 수 있습니다. 자동 저장은 같은 브라우저·주소에서 동작하며, 브라우저 데이터 삭제 시 함께 지워집니다. 여러 탭에서는 마지막으로 저장한 탭의 실험이 복원됩니다. 저장 공간이 차거나 접근이 차단되면 화면에 안내하며 JSON 저장은 계속 사용할 수 있습니다.
 
 ## 4. 포함 기능
 
@@ -83,6 +83,8 @@ macOS / Linux:
 | 장애 | 배터리 저하, 과열, 자세 불안정, 통신 품질 저하, 컴퓨터 과부하 |
 | 모의 대응 | 절전, 탑재체 부하 축소, 자세제어 재초기화, 예비 통신계 전환, 컴퓨터 재시작 |
 | 비교 | 동일 시각·동일 난수 조건의 대응 실행 / 미대응 결과 비교 |
+| 탐색 | 위성 이름·번호 검색, 상태 필터, 위험도순 정렬, 선택 위성 중심 이동 |
+| 실험 보존 | 자동 저장·재접속 복원, 초기화·불러오기 전 실험으로 되돌리기 |
 | 재현성 | 시드·설정·장애·대응 시각을 JSON 저장 및 복원 |
 | 데이터 | 현재 시각 전체 위성 CSV, Excel 호환 UTF-8 BOM 포함 |
 
@@ -133,6 +135,7 @@ Isolation Forest가 반환하는 점수의 의미는 [scikit-learn 공식 문서
 | `engine.py` | Python 궤도·텔레메트리·이상 탐지·대응 계산 |
 | `static/index.html` | 한국어 관제 화면 |
 | `static/style.css` | 데스크톱·모바일 반응형 스타일 |
+| `static/lab-state.js` | 실험 파일 처리와 위성 필터·정렬 |
 | `static/app.js` | API 호출, 지도·그래프, 입력·재생·내보내기 |
 | `static/world.json` | 번들 지도 좌표 |
 | `render.yaml` | Render Blueprint |
@@ -160,3 +163,8 @@ API 명세는 `/openapi.json`에서 확인할 수 있습니다. 관제 화면은
 ## 지도 출처
 
 `static/world.json`: Natural Earth 1:110m, GeoPandas 0.14.4 배포본의 `naturalearth_lowres` 좌표에서 변환. [Natural Earth 이용 조건](https://www.naturalearthdata.com/about/terms-of-use/)에 따른 public domain 데이터입니다. GeoPandas·pyshp는 지도 변환에만 사용했으며 앱 실행 의존성에 포함되지 않습니다.
+
+### 브라우저 기능 검증
+
+Node.js가 설치된 환경에서 `node --test tests/state.test.cjs`로 실험 파일·검색·정렬을 검증합니다.
+Playwright가 설치된 환경에서는 서버를 실행한 뒤 `node tests/dashboard.cjs`로 자동 복원, 되돌리기, 잘못된 입력 보존, 저장 공간 오류, 360·768·1024px 화면을 검증합니다. `PLAYWRIGHT_MODULE`에 설치된 Playwright 모듈 경로를, `ORBIT_LAB_URL`에 테스트 서버 주소를 지정할 수 있습니다(기본 `http://127.0.0.1:8000`). 테스트는 별도 브라우저 컨텍스트를 사용합니다.

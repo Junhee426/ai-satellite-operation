@@ -6,3 +6,6 @@
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 
 .earth-controls{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-bottom:12px}.earth-controls>span{font-size:12px;color:var(--muted)}
+
+.fleet-tools{display:flex;gap:8px;margin-bottom:8px}.fleet-tools input{width:100%;min-width:0;border:1px solid #35455b;background:#0b1728;color:var(--text);border-radius:7px;padding:9px 10px}.fleet-tools select{flex-shrink:0}#fleetCount{margin:0 0 10px;font-variant-numeric:tabular-nums}#saveStatus{color:var(--cyan);min-height:2.6em}.earth-controls #focusSatellite{margin-right:auto;font-size:12px}.orbit-panel>.panel-title{flex-wrap:wrap}.orbit-panel>.panel-title>div:first-child{min-width:0}#selectedLabel{overflow-wrap:anywhere}
+@media(max-width:380px){.earth-controls{justify-content:flex-start}.fleet-tools{flex-wrap:wrap}.fleet-tools select{width:100%}.time-controls button{padding:8px}.clock strong{font-size:18px}}
