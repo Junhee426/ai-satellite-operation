@@ -26,6 +26,8 @@ $('focusSatellite').onclick=()=>{
   if(!data)return;camera={lon:data.selected.lon,lat:data.selected.lat};view='globe';setView();
 };
 let view='globe', camera={lon:103,lat:22}, hitPoints=[], drag=null, world=[];
+let orbitMotion=null,orbitFrame=null;
+const orbitMath=OrbitGeometry;
 const colors={normal:'#6addb4',warning:'#ffc570',critical:'#ff7d8b',selected:'#59d8ed'};
 
 // Shared Earth globe renderer (identical across K-LEO services): textured orthographic
@@ -100,14 +102,27 @@ async function refresh(next=state,{archive=false,persist=true}={}){
     const r=await request('/api/simulate',next),result=await r.json();
     const validated=clone(lab.normalize(next,defaults));
     if(archive&&data)previousExperiment=clone(state);
+    const priorTime=orbitTime(),smooth=playing&&data&&validated.elapsed>state.elapsed&&!matchMedia('(prefers-reduced-motion: reduce)').matches;
     data=result;state=validated;locallySaved=false;
+    orbitMotion=smooth?{from:priorTime,started:performance.now()}:null;
+    if(smooth)animateOrbit();
     $('connection').textContent='Python 엔진 연결됨';render();
     if(persist)persistExperiment();return true;
   }
   catch(e){if(data)$('satSelect').value=state.selected;pause();$('connection').textContent='연결 확인 필요';notice(e.name==='AbortError'?'응답이 지연되었습니다. 잠시 후 다시 시도하세요.':e.message,true);return false;}
   finally{setBusy(false);}
 }
-function pause(){playing=false;clearTimeout(timer);$('play').textContent='▶ 시작';}
+function orbitTime(){
+  if(!orbitMotion)return state.elapsed;
+  const fraction=Math.min(1,(performance.now()-orbitMotion.started)/700);
+  return orbitMotion.from+(state.elapsed-orbitMotion.from)*fraction;
+}
+function animateOrbit(){
+  cancelAnimationFrame(orbitFrame);
+  const tick=()=>{drawOrbit();if(orbitMotion&&performance.now()-orbitMotion.started<700)orbitFrame=requestAnimationFrame(tick);else orbitMotion=null;};
+  orbitFrame=requestAnimationFrame(tick);
+}
+function pause(){playing=false;clearTimeout(timer);cancelAnimationFrame(orbitFrame);orbitMotion=null;$('play').textContent='▶ 시작';drawOrbit();}
 function schedule(){clearTimeout(timer);if(!playing)return;timer=setTimeout(async()=>{if(!playing)return;if(!busy){const next=clone(state);next.elapsed=Math.min(86400,next.elapsed+Number($('speed').value));await refresh(next);if(state.elapsed>=86400){pause();notice('24시간 실험이 종료되었습니다. 설정 적용으로 새 실험을 시작하세요.');}}schedule();},1000);}
 $('play').onclick=()=>{if(playing){pause();return;}if(!data||busy){notice('엔진이 준비된 뒤 시작하세요.');return;}if(state.elapsed>=86400){notice('24시간에 도달했습니다. 새 실험을 시작하세요.');return;}playing=true;$('play').textContent='Ⅱ 일시정지';notice('');schedule();};
 $('advance').onclick=async()=>{pause();const next=clone(state);next.elapsed=Math.min(86400,next.elapsed+300);notice('');await refresh(next);};
@@ -145,7 +160,14 @@ function setEarthStyle(style){
 }
 $('outlineStyle').onclick=()=>setEarthStyle('outline');
 $('imageStyle').onclick=()=>setEarthStyle('image');
-function setView(){$('orbitCanvas').parentElement.dataset.view=view;for(const [id,v] of [['globeView','globe'],['mapView','map']]){const on=view===v;$(id).classList.toggle('active',on);$(id).setAttribute('aria-pressed',String(on));}$('orbitHint').textContent=view==='globe'?'지구본 드래그로 회전 · 위성 클릭으로 선택':'위성 클릭으로 선택 · 점은 위성의 지상 직하점';drawOrbit();}
+$('orbitLines').onchange=drawOrbit;$('showGroundTrack').onchange=drawOrbit;
+function setView(){
+  $('orbitCanvas').parentElement.dataset.view=view;
+  for(const [id,v] of [['globeView','globe'],['mapView','map']]){const on=view===v;$(id).classList.toggle('active',on);$(id).setAttribute('aria-pressed',String(on));}
+  $('orbitLines').disabled=view==='map';$('showGroundTrack').disabled=view==='map';
+  $('orbitDescription').textContent=view==='globe'?'지구·고도 비율 반영 · 실선은 현재 궤도면 · 위성 표식은 확대 표시':'점은 지상 직하점 · 점선은 선택 위성의 향후 1주기 지상궤적';
+  $('orbitHint').textContent=view==='globe'?'드래그로 회전 · 위성 클릭으로 선택':'위성 클릭으로 선택 · 지상궤적에는 지구 자전을 반영';drawOrbit();
+}
 $('guideButton').onclick=()=>$('guide').showModal();$('closeGuide').onclick=()=>$('guide').close();
 function download(blob,name){const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 $('save').onclick=()=>{pause();download(new Blob([JSON.stringify({format:'orbit-lab-v1',simulation:state},null,2)],{type:'application/json'}),'orbit-lab-experiment.json');notice('현재 설정·장애·대응 시각을 저장했습니다.');};
@@ -201,39 +223,65 @@ function renderFleet(){
 }
 function canvasSize(canvas){const r=canvas.getBoundingClientRect(),dpr=Math.min(devicePixelRatio||1,2);canvas.width=Math.round(r.width*dpr);canvas.height=Math.round(r.height*dpr);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);return {ctx,w:r.width,h:r.height,dpr};}
 function drawOrbit(){
-  if(!data)return;const {ctx,w,h,dpr}=canvasSize($('orbitCanvas'));if(!w)return;
-  const radius=Math.min(w*.40,h*.43),cx=w/2,cy=h*.46;const d=Math.PI/180;
-  // Keep the equirectangular map at 2:1 with space for coordinate labels.
+  if(!data||!data.orbit)return;const {ctx,w,h,dpr}=canvasSize($('orbitCanvas'));if(!w)return;
+  const model=data.orbit,t=orbitTime(),ratio=1+state.config.altitude/model.earth_radius_km;
+  const radius=Math.min((w-48)/2,(h-58)/2)/ratio,cx=w/2,cy=h/2+5,basis=orbitMath.frame(camera);
   const mapWidth=Math.max(1,Math.min(w-64,(h-64)*2)),mapHeight=mapWidth/2;
   const mapLeft=(w-mapWidth)/2,mapTop=24+(h-64-mapHeight)/2;
-  const project=(lat,lon)=>{
-    if(view==='map')return {x:mapLeft+(lon+180)/360*mapWidth,y:mapTop+(90-lat)/180*mapHeight,front:true};
-    const a=lat*d,b=(lon-camera.lon)*d,c=camera.lat*d;
-    const z=Math.sin(c)*Math.sin(a)+Math.cos(c)*Math.cos(a)*Math.cos(b);
-    return{x:cx+radius*Math.cos(a)*Math.sin(b),y:cy-radius*(Math.cos(c)*Math.sin(a)-Math.sin(c)*Math.cos(a)*Math.cos(b)),front:z>=0,z};
-  };
-  if(view==='globe'){
-    if(earthStyle==='image')paintGlobeTexture(ctx,cx,cy,radius,dpr,camera.lat,camera.lon);
-    else{
-      ctx.strokeStyle='#45758a';ctx.lineWidth=1;
-      ctx.beginPath();ctx.arc(cx,cy,radius,0,Math.PI*2);ctx.stroke();
-    }
-  }else if(earthStyle==='image'&&earthImage)ctx.drawImage(earthImage,mapLeft,mapTop,mapWidth,mapHeight);
-  function line(points,color,width=1,dash=[]){ctx.beginPath();ctx.strokeStyle=color;ctx.lineWidth=width;ctx.setLineDash(dash);let prev=null;for(const [a,b] of points){const p=project(a,b);if(p.front){if(!prev||Math.abs(p.x-prev.x)>w/2)ctx.moveTo(p.x,p.y);else ctx.lineTo(p.x,p.y);prev=p;}else prev=null;}ctx.stroke();ctx.setLineDash([]);}
-  for(let lat=-60;lat<=60;lat+=30)line(Array.from({length:181},(_,i)=>[lat,-180+i*2]),lat===0?'#34607a':'#25435a',.7);
-  for(let lon=-180;lon<180;lon+=30)line(Array.from({length:91},(_,i)=>[-90+i*2,lon]),'#25435a',.7);
-  for(const outline of world)line(outline,'#45758a',.85);
-  if(view==='map'){ctx.font='11px system-ui';ctx.fillStyle='#7793ae';ctx.textAlign='center';for(let lon=-180;lon<=180;lon+=60){const p=project(0,lon);ctx.fillText(lon+'°',p.x,mapTop+mapHeight+18);}ctx.textAlign='right';for(let lat=-60;lat<=60;lat+=30){const p=project(lat,-180);ctx.fillText(lat+'°',p.x-4,p.y+4);}}
-  line(data.track,'#59d8ed88',1.5,[4,4]);
-  hitPoints=[];
-  for(const sat of data.satellites){const p=project(sat.lat,sat.lon);if(!p.front)continue;const selected=sat.id===state.selected;
-    ctx.fillStyle=selected?colors.selected:colors[sat.status];ctx.beginPath();ctx.arc(p.x,p.y,selected?5:sat.status==='normal'?2.6:3.8,0,Math.PI*2);ctx.fill();
-    if(selected||sat.status!=='normal'){ctx.strokeStyle=selected?'#7ae7fcaa':colors[sat.status]+'66';ctx.lineWidth=1;ctx.beginPath();ctx.arc(p.x,p.y,selected?10:7,0,Math.PI*2);ctx.stroke();}
-    if(selected){ctx.fillStyle='#c7f9ff';ctx.font='12px system-ui';ctx.textAlign='left';ctx.fillText(sat.name,Math.min(p.x+13,w-100),p.y-10);}hitPoints.push({x:p.x,y:p.y,id:sat.id});
+  const space=point=>{const p=orbitMath.project(point,basis);return {...p,x:cx+radius*p.x,y:cy-radius*p.y,front:p.visible};};
+  const project=(lat,lon)=>view==='map'?{x:mapLeft+(lon+180)/360*mapWidth,y:mapTop+(90-lat)/180*mapHeight,front:true}:space(orbitMath.vector(lat,lon));
+  function stroke(points,color,width=1,dash=[],wrap=false){
+    ctx.beginPath();ctx.strokeStyle=color;ctx.lineWidth=width;ctx.setLineDash(dash);let prev=null;
+    for(const p of points){if(p.front){if(!prev||(wrap&&Math.abs(p.x-prev.x)>mapWidth/2))ctx.moveTo(p.x,p.y);else ctx.lineTo(p.x,p.y);prev=p;}else prev=null;}
+    ctx.stroke();ctx.setLineDash([]);
   }
-  for(const site of data.stations){const p=project(site.lat,site.lon);if(!p.front)continue;ctx.strokeStyle='#d3dbe9';ctx.fillStyle='#e8f4ff';ctx.lineWidth=1.5;ctx.strokeRect(p.x-4,p.y-4,8,8);ctx.font='12px system-ui';ctx.textAlign='left';ctx.fillText(site.name,Math.min(p.x+10,w-65),p.y+14);}
-  ctx.font='12px system-ui';ctx.textAlign='left';ctx.fillStyle='#829bb5';ctx.fillText(`${state.config.altitude.toLocaleString()} km / ${state.config.inclination}°`,8,16);
-  if(view==='globe'){ctx.textAlign='right';ctx.fillText(`중심 ${camera.lat.toFixed(0)}°, ${camera.lon.toFixed(0)}°`,w-8,16);}
+  const surfaceLine=(points,color,width=1,dash=[])=>stroke(points.map(([lat,lon])=>project(lat,lon)),color,width,dash,view==='map');
+  if(view==='globe'){
+    // Opaque sphere in both display styles; hidden orbits never shine through.
+    ctx.fillStyle='#0a1b2b';ctx.beginPath();ctx.arc(cx,cy,radius,0,Math.PI*2);ctx.fill();
+    if(earthStyle==='image')paintGlobeTexture(ctx,cx,cy,radius,dpr,camera.lat,camera.lon);
+    else{ctx.strokeStyle='#45758a';ctx.lineWidth=1;ctx.stroke();}
+  }else if(earthStyle==='image'&&earthImage)ctx.drawImage(earthImage,mapLeft,mapTop,mapWidth,mapHeight);
+  for(let lat=-60;lat<=60;lat+=30)surfaceLine(Array.from({length:181},(_,i)=>[lat,-180+i*2]),lat===0?'#34607a':'#25435a',.6);
+  for(let lon=-180;lon<180;lon+=30)surfaceLine(Array.from({length:91},(_,i)=>[-90+i*2,lon]),'#25435a',.6);
+  for(const outline of world)surfaceLine(outline,'#45758a',.75);
+  if(view==='map'){
+    ctx.font='11px system-ui';ctx.fillStyle='#7793ae';ctx.textAlign='center';
+    for(let lon=-180;lon<=180;lon+=60){const p=project(0,lon);ctx.fillText(lon+'°',p.x,mapTop+mapHeight+18);}
+    ctx.textAlign='right';for(let lat=-60;lat<=60;lat+=30){const p=project(lat,-180);ctx.fillText(lat+'°',p.x-4,p.y+4);}
+  }
+  if(view==='map'||$('showGroundTrack').checked)surfaceLine(data.track,'#ffcf7eaa',1.4,[3,5]);
+  const selectedPlane=Math.floor(state.selected/state.config.per_plane);
+  if(view==='globe'&&$('orbitLines').value!=='none'){
+    // Each ring is a simultaneous orbital plane, not a future Earth-fixed ground track.
+    const planes=Array.from({length:state.config.planes},(_,i)=>i).filter(i=>i!==selectedPlane);planes.push(selectedPlane);
+    for(const plane of planes){
+      if($('orbitLines').value==='selected'&&plane!==selectedPlane)continue;
+      const points=Array.from({length:361},(_,i)=>space(orbitMath.orbitPoint(state.config,model,plane,i*Math.PI/180,t)));
+      stroke(points,plane===selectedPlane?'#70dff4':'#719eb057',plane===selectedPlane?1.8:1);
+    }
+  }
+  const located=data.satellites.map(sat=>{
+    const point=orbitMath.position(state.config,model,sat.id,t),location=orbitMath.latLon(point);
+    return {sat,location,p:view==='globe'?space(point):project(location.lat,location.lon)};
+  }).sort((a,b)=>(a.p.z||0)-(b.p.z||0));
+  if(view==='globe'){
+    const selected=located.find(item=>item.sat.id===state.selected),foot=project(selected.location.lat,selected.location.lon);
+    if(selected.p.front&&foot.front){
+      stroke([foot,selected.p],'#ffcf7ecc',1,[3,3]);ctx.strokeStyle='#ffcf7e';ctx.lineWidth=1;
+      ctx.beginPath();ctx.arc(foot.x,foot.y,3,0,Math.PI*2);ctx.stroke();
+    }
+  }
+  hitPoints=[];
+  for(const {sat,p} of located){
+    if(!p.front)continue;const selected=sat.id===state.selected;
+    ctx.fillStyle=selected?colors.selected:colors[sat.status];ctx.beginPath();ctx.arc(p.x,p.y,3,0,Math.PI*2);ctx.fill();
+    if(selected){ctx.strokeStyle='#a5f0ff';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(p.x,p.y,7,0,Math.PI*2);ctx.stroke();ctx.fillStyle='#d9faff';ctx.font='12px system-ui';ctx.textAlign='left';ctx.fillText(sat.name,Math.max(4,Math.min(p.x+12,w-95)),Math.max(34,p.y-12));}
+    hitPoints.push({x:p.x,y:p.y,id:sat.id});
+  }
+  for(const site of data.stations){const p=project(site.lat,site.lon);if(!p.front)continue;ctx.strokeStyle='#d3dbe9';ctx.fillStyle='#e8f4ff';ctx.lineWidth=1.5;ctx.strokeRect(p.x-3,p.y-3,6,6);ctx.font='11px system-ui';ctx.textAlign='left';ctx.fillText(site.name,Math.min(p.x+8,w-65),p.y+14);}
+  ctx.font='11px system-ui';ctx.textAlign='left';ctx.fillStyle='#a5bdd3';ctx.fillText(`고도 ${state.config.altitude.toLocaleString()} km · 경사각 ${state.config.inclination}°`,8,16);
+  ctx.textAlign='right';ctx.fillText(`궤도 T+ ${clock(t)}`,w-8,h-6);
 }
 function drawChart(){
   if(!data)return;const {ctx,w,h}=canvasSize($('chartCanvas')),key=$('metric').value,history=data.history;

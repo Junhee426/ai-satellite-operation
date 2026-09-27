@@ -6,6 +6,7 @@
   <title>AI 위성 관제 실험실 · ORBIT LAB</title>
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/lab-state.js" defer></script>
+  <script src="/static/orbit-geometry.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -46,9 +47,10 @@
       <section class="panel compact"><h2>실험 데이터</h2><div class="export-buttons"><button id="csv">CSV 저장</button><button id="save">실험 저장</button><button id="load">실험 불러오기</button></div><input id="file" type="file" accept=".json,application/json" hidden><p id="saveStatus" class="footnote" role="status">자동 저장 준비 중</p><button id="restorePrevious" class="quiet wide" disabled>이전 실험으로 되돌리기</button><p class="footnote">이 브라우저에 자동 저장합니다. 장기 보관·다른 기기로 이동할 때는 JSON으로 저장하세요.</p></section>
     </aside>
     <div class="centercol">
-      <section class="panel orbit-panel"><div class="panel-title"><div><h2>궤도 상황도</h2><span id="selectedLabel" class="muted">K-LEO 001</span></div><div class="segmented"><button id="globeView" class="active" aria-pressed="true">지구본</button><button id="mapView" aria-pressed="false">평면도</button></div></div>
+      <section class="panel orbit-panel"><div class="panel-title"><div><h2>궤도 상황도</h2><span id="selectedLabel" class="muted">K-LEO 001</span></div><div class="segmented"><button id="globeView" class="active" aria-pressed="true">3D 궤도</button><button id="mapView" aria-pressed="false">평면도</button></div></div>
         <div class="earth-controls"><button id="focusSatellite" class="quiet" type="button">선택 위성 중심</button><span id="earthStyleLabel">지구 표시</span><div class="segmented" role="group" aria-labelledby="earthStyleLabel"><button id="outlineStyle" type="button" aria-pressed="false">윤곽선</button><button id="imageStyle" type="button" class="active" aria-pressed="true">지구 이미지</button></div></div>
-        <div class="orbit-wrap"><canvas id="orbitCanvas" aria-label="위성 위치와 선택 위성의 향후 한 궤도 지상궤적. 위성 목록으로도 선택할 수 있습니다."></canvas></div><div class="map-caption">선택 위성의 향후 1주기 지상궤적<br><span id="orbitHint">지구본 드래그로 회전 · 위성 클릭으로 선택</span></div>
+        <div class="orbit-options"><label>궤도선<select id="orbitLines"><option value="all">모든 궤도면</option><option value="selected">선택 궤도면</option><option value="none">숨기기</option></select></label><label class="check-label"><input id="showGroundTrack" type="checkbox">지상궤적 함께 보기</label></div>
+        <div class="orbit-wrap"><canvas id="orbitCanvas" aria-label="고도와 궤도면을 반영한 위성 공간 위치. 평면도는 지상 직하점을 표시합니다. 위성 목록으로도 선택할 수 있습니다."></canvas></div><div class="map-caption"><span id="orbitDescription">지구·고도 비율 반영 · 실선은 현재 궤도면 · 위성 표식은 확대 표시</span><br><span id="orbitHint">드래그로 회전 · 위성 클릭으로 선택</span></div>
         <div class="legend"><span><b class="dot normal"></b>정상</span><span><b class="dot warning"></b>관심</span><span><b class="dot critical"></b>경고</span><span><b class="dot selected"></b>선택 위성</span><span class="muted">구면 지구 · 간략 원궤도</span></div>
       </section>
       <section class="panel fleet-panel"><div class="panel-title"><h2>위성군 상태</h2><select id="filter" aria-label="위성 상태 필터"><option value="all">전체 위성</option><option value="anomaly">이상 위성</option><option value="visible">대전 가시</option></select></div><div class="fleet-tools"><input id="fleetSearch" type="search" placeholder="위성 이름 또는 번호 검색" aria-label="위성 검색"><select id="fleetSort" aria-label="위성 정렬"><option value="id">번호순</option><option value="risk">위험도순</option></select></div><p id="fleetCount" class="footnote"></p><div id="fleet" class="fleet" aria-label="위성 선택 목록"></div><p id="fleetEmpty" class="muted" hidden>이 조건에 해당하는 위성이 없습니다.</p></section>

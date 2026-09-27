@@ -202,6 +202,7 @@ def snapshot(req):
         a,b,_,_,_=geometry(cfg,t+float(dt),[chosen])
         tracks.append([round(float(a[0]),3),round(float(b[0]),3)])
     return {'elapsed':t,'satellites':sats,'selected':sats[chosen],'history':history,
+            'orbit':{'earth_radius_km':EARTH_KM,'rotation_rate':ROTATION,'period_seconds':period},
             'contributors':contributors, 'stations':stations, 'track':tracks,
             'summary':{'total':len(sats),'normal':statuses.count('normal'),
                        'warning':statuses.count('warning'),'critical':statuses.count('critical'),
