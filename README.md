@@ -153,6 +153,8 @@ python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
+GitHub Actions(`.github/workflows/ci.yml`)가 PR과 main 푸시마다 Python 테스트와 Node 단위 테스트(`tests/state.test.cjs`, `tests/orbit.test.cjs`)를 실행합니다. 서버는 64 KB를 넘는 POST 본문을 `Content-Length`가 없는 분할 전송까지 포함해 413으로 거부하며, 이 동작과 보안 헤더도 테스트합니다.
+
 API 명세는 `/openapi.json`에서 확인할 수 있습니다. 관제 화면은 외부 CDN 없이 동작합니다.
 
 건강 확인: `GET /healthz`. 모의 계산: `POST /api/simulate`. CSV: `POST /api/export`. 장애·대응 목록: `GET /api/catalog`.

@@ -153,3 +153,20 @@ def test_concurrent_max_size_requests_are_race_free_and_deterministic(client):
         by_seed.setdefault(seed, []).append(data)
     for seed, datas in by_seed.items():
         assert all(d == datas[0] for d in datas), f'seed {seed} results diverged under concurrency'
+
+
+def test_oversized_bodies_are_rejected_before_validation(client):
+    big = b'{"seed":1,"pad":"' + b'x'*70000 + b'"}'
+    declared = client.post('/api/simulate', content=big, headers={'content-type':'application/json'})
+    assert declared.status_code == 413
+    # Chunked uploads carry no Content-Length and must be cut off while streaming.
+    streamed = client.post('/api/simulate', content=iter([big[:40000], big[40000:]]), headers={'content-type':'application/json'})
+    assert streamed.status_code == 413
+    small = client.post('/api/simulate', content=iter([b'{"seed":', b'5}']), headers={'content-type':'application/json'})
+    assert small.status_code == 200 and small.json()['summary']['total'] == 128
+
+
+def test_security_headers_on_pages_and_api(client):
+    for response in (client.get('/'), client.get('/static/app.js'), client.post('/api/simulate', json={})):
+        assert response.headers['x-content-type-options'] == 'nosniff'
+        assert "frame-ancestors 'none'" in response.headers['content-security-policy']
