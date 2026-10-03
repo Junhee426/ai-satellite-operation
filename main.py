@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -89,6 +90,10 @@ async def lifespan(app):
 
 app = FastAPI(title='AI 위성 관제 실험실', version='1.0.0', lifespan=lifespan,
               docs_url=None, redoc_url=None)
+# Snapshots are 40–150 KB of JSON and playback requests one per second; gzip cuts that about fivefold.
+# Registered before the body-limit middleware so it wraps the routes directly and sees whole bodies
+# (a streamed response from BaseHTTPMiddleware would be compressed regardless of minimum_size).
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 
 @app.middleware('http')

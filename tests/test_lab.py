@@ -170,3 +170,11 @@ def test_security_headers_on_pages_and_api(client):
     for response in (client.get('/'), client.get('/static/app.js'), client.post('/api/simulate', json={})):
         assert response.headers['x-content-type-options'] == 'nosniff'
         assert "frame-ancestors 'none'" in response.headers['content-security-policy']
+
+
+def test_large_responses_are_compressed_and_keep_security_headers(client):
+    response = client.post('/api/simulate', json={}, headers={'accept-encoding': 'gzip'})
+    assert response.headers['content-encoding'] == 'gzip'
+    assert response.headers['x-content-type-options'] == 'nosniff'
+    assert response.json()['summary']['total'] == 128
+    assert 'content-encoding' not in client.get('/healthz', headers={'accept-encoding': 'gzip'}).headers

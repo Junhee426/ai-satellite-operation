@@ -1,6 +1,8 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const clone = x => JSON.parse(JSON.stringify(x));
+// randomUUID exists only in secure contexts (HTTPS, localhost); `python main.py` also serves plain HTTP to the LAN.
+const newId = () => crypto.randomUUID?.() ?? Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
 const defaults = {config:{altitude:1280,inclination:42,planes:8,per_plane:16,phasing:1,min_elevation:10},elapsed:0,seed:42,selected:0,faults:[],actions:[]};
 let state=clone(defaults), data=null, catalog=null, busy=false, playing=false, timer=null;
 let earthStyle='image';
@@ -141,7 +143,7 @@ $('severity').oninput=e=>$('severityValue').textContent=e.target.value+'%';
 $('inject').onclick=async()=>{
   if(!data||busy)return;pause();const kind=$('faultKind').value;
   if(state.faults.some(f=>f.satellite===state.selected&&f.kind===kind)){notice('이 위성에는 같은 장애가 이미 있습니다. 새 실험 또는 다른 위성을 선택하세요.');return;}
-  const next=clone(state);next.faults.push({id:crypto.randomUUID(),satellite:state.selected,kind,at:state.elapsed,severity:Number($('severity').value)/100});
+  const next=clone(state);next.faults.push({id:newId(),satellite:state.selected,kind,at:state.elapsed,severity:Number($('severity').value)/100});
   if(await refresh(next)){notice(`${data.selected.name}에 ${catalog.faults[kind].name} 장애를 주입했습니다. +5분 또는 시작을 눌러 진행하세요.`);$('metric').value={thermal:'temperature',battery:'battery',attitude:'pointing',link:'packet_loss',cpu:'cpu'}[kind];drawChart();}
 };
 $('demo').onclick=async()=>{pause();const next=clone(defaults);next.elapsed=600;next.faults=[{id:'demo-thermal',satellite:0,kind:'thermal',at:180,severity:1}];if(await refresh(next,{archive:true})){fillConfig();$('metric').value='temperature';drawChart();notice('과열 예제를 불러왔습니다. 오른쪽 권고의 모의 실행 → +5분으로 대응 효과를 확인하세요.');}};
