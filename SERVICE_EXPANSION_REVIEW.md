@@ -9,13 +9,13 @@
 
 **아니오. 프로세스당 1회만 학습된다.**
 
-- `engine.py:46-57`의 `detector()`는 `@lru_cache(maxsize=1)`로 감싸여 있어, 6,000개
+- `engine.py`의 `detector()`는 `@lru_cache(maxsize=1)`로 감싸여 있어, 6,000개
   합성 샘플로 `IsolationForest.fit()`을 수행하고 4,000개 샘플로 위험도 앵커
   (quantile)를 보정하는 비용이 프로세스 생애주기 동안 정확히 한 번만 발생한다.
-- `main.py:84-87`의 `lifespan()`이 앱이 요청을 받기 **전에** `detector()`를 동기
+- `main.py`의 `lifespan()`이 앱이 요청을 받기 **전에** `detector()`를 동기
   호출해 캐시를 미리 채운다(warm-up). FastAPI/Starlette는 lifespan의 startup이
   끝나야 요청을 받기 시작하므로, 최초 요청과 캐시 채움 사이의 경쟁 조건도 없다.
-- `engine.py:61`의 `infer()`는 매 요청마다 `detector()`를 호출하지만 `lru_cache`가
+- `engine.py`의 `infer()`는 매 요청마다 `detector()`를 호출하지만 `lru_cache`가
   즉시 캐시된 동일 객체(`model, anchors, mean, sd` 튜플)를 반환한다.
 - **근거**: `tests/test_lab.py::test_isolation_forest_is_trained_once_not_per_request`
   추가 — 위성 수·경과시간이 다른 4개의 `/api/simulate` 호출 전후로
@@ -25,13 +25,13 @@
 ## 2. 동시 요청 간 경쟁(race)을 일으킬 공유 가변 상태가 있는가?
 
 **없음.** `FIELDS`, `LABELS`, `UNITS`, `STATIONS`, `FAULTS`, `ACTIONS`는 모두
-모듈 로드시 정의되는 읽기 전용 상수이며, 요청 처리 경로(`geometry`, `telemetry`,
-`diagnose`, `snapshot`, 두 API 핸들러) 전체를 확인한 결과 이들 전역을 변형(`append`,
+모듈 로드시 정의되어 읽기 전용으로 사용하는 값이며, 요청 처리 경로(`geometry`, `telemetry`,
+`diagnose`, `current_snapshot`, `snapshot`, 두 API 핸들러) 전체를 확인한 결과 이들 전역을 변형(`append`,
 `update`, 재할당 등)하는 코드는 없다(`grep`으로 전수 확인). 요청별 배열(`v`,
 `capacity`, `sats`, `alerts` 등)은 모두 함수 지역 변수다. 캐시된 `IsolationForest`
 객체에 대한 `score_samples()` 호출도 추론 전용 연산으로, 내부 상태를 쓰지 않으므로
 스레드 간 안전하다(동기 엔드포인트는 Starlette 스레드풀에서 병렬 실행됨).
-`main.py:94-114`의 바디 크기 제한 미들웨어도 요청마다 새 `bytearray`를 사용해
+`main.py`의 `bounds()` 바디 크기 제한 미들웨어도 요청마다 새 `bytearray`를 사용해
 `request`별로 격리된다.
 
 - **근거**: `tests/test_lab.py::test_concurrent_max_size_requests_are_race_free_and_deterministic`
@@ -42,22 +42,29 @@
 ## 3. 512기/24시간 상한에서 비정상적으로 커지는 요청당 비용이 있는가?
 
 **없음.** 전체 위성(n≤512) 연산은 `geometry`/`telemetry`에서 NumPy로 벡터화되어
-있고, 장애(`faults`)·대응(`actions`) 개수는 각각 62바이트 요청 크기 제한과 별개로
-`max_length=64`로 이미 제한되어 있다(`main.py:59-60`). `snapshot()`의 이력(history)
-루프는 경과시간과 무관하게 고정 폭(최근 1200초를 30초 간격, 약 41개 시점)만
+있고, 장애(`faults`)·대응(`actions`) 개수는 64KB 요청 크기 제한과 별개로
+각각 `max_length=64`로 제한되어 있다(`main.py`의 `SimulationRequest`). `snapshot()`의 이력(history)
+루프는 경과시간과 무관하게 고정 폭(최근 1200초를 30초 간격, 현재 시각 포함 최대 42개 시점)만
 계산하고, 지상궤적(`track`)도 고정 97개 점만 계산하며 둘 다 선택된 위성 1기에
-대해서만 수행되므로 위성 수 증가와 무관하다. 요청 바디는 64KB로 사전 제한된다.
+대해서만 수행된다. 다만 정상 노이즈는 기존 재현성을 유지하기 위해 전체 위성 수만큼
+생성하므로 이력 계산 비용도 위성 수의 영향을 받는다. 요청 바디는 64KB로 사전 제한된다.
 경과시간·위성 수·장애/대응 개수 조합을 늘려도 선형 이상으로 증가하는 지점을
 찾지 못했다.
 
 ## 변경 사항
 
-코드 로직(`main.py`, `engine.py`) 자체에는 실제 확장성 결함을 발견하지 못해
+초기 동시성 검토에서는 코드 로직(`main.py`, `engine.py`) 자체의 확장성 결함을 발견하지 못해
 수정하지 않았다. 위 3가지 보장을 회귀로부터 지키기 위해 테스트만 추가했다:
 
 - `test_isolation_forest_is_trained_once_not_per_request` — 모델 캐싱 보장.
 - `test_concurrent_max_size_requests_are_race_free_and_deterministic` — 동시성/
   무상태 보장.
+
+2026-10-20 개선에서는 `current_snapshot()`으로 현재 시점 계산을 분리하여 CSV가
+사용하지 않는 이력·궤적을 계산하지 않도록 했다. 이력의 대응·미대응 분기는 같은
+정상값을 공유하되 각자 복사한 배열에 효과를 적용한다. 위상·좌표 계산도 분리하여
+텔레메트리와 궤적에서 불필요한 지상국 앙각 계산을 줄였다. 15개 정수 시각 시나리오에서
+변경 전후 전체 응답이 정확히 같음을 확인했으며, 소수 시각의 미래 표본은 별도로 수정했다.
 
 ## 보류(범위 밖)
 
@@ -69,7 +76,5 @@
 
 ## 테스트 결과
 
-```
-python -m pip install -r requirements-dev.txt && python -m pytest -q
-30 passed, 2 warnings
-```
+2026-10-20 선언 의존성 설치 후 `python -m pytest -q`: **75 passed**.
+환경과 브라우저 검증 범위는 [VALIDATION.md](VALIDATION.md)에 기록한다.

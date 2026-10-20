@@ -89,19 +89,21 @@ const escape = s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'
 const clock = s=>[Math.floor(s/3600),Math.floor(s%3600/60),Math.floor(s%60)].map(x=>String(x).padStart(2,'0')).join(':');
 function notice(message,error=false){$('notice').textContent=message;$('notice').classList.toggle('error',error);$('notice').hidden=!message;}
 function setBusy(v){busy=v;for(const id of ['advance','inject','demo','csv','save','load','satSelect'])$(id).disabled=v;$('configForm').querySelector('button').disabled=v;document.querySelectorAll('[data-action]').forEach(b=>b.disabled=v);$('restorePrevious').disabled=v||!previousExperiment;}
-async function request(path,payload){
+async function request(path,payload,{responseType='json'}={}){
   const ctrl=new AbortController(),timeout=setTimeout(()=>ctrl.abort(),30000);
   try{
-    const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:ctrl.signal});
-    if(!r.ok){const e=await r.json().catch(()=>({detail:'서버 응답 오류'}));const message=Array.isArray(e.detail)?e.detail.map(x=>`${x.loc?.slice(1).join('.')}: ${x.msg}`).join(' / '):e.detail;throw Error(message||`HTTP ${r.status}`);}
-    return r;
+    const options=payload===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)};
+    const r=await fetch(path,{...options,signal:ctrl.signal});
+    if(!r.ok){const e=await r.json().catch(error=>{if(error.name==='AbortError')throw error;return {detail:'서버 응답 오류'};});const message=Array.isArray(e.detail)?e.detail.map(x=>[x.loc?.slice(1).join('.'),x.msg].filter(Boolean).join(': ')).join(' / '):e.detail;throw Error(message||`HTTP ${r.status}`);}
+    // fetch resolves at response headers; keep the deadline until the body is read.
+    return await (responseType==='blob'?r.blob():r.json());
   }finally{clearTimeout(timeout);}
 }
 async function refresh(next=state,{archive=false,persist=true}={}){
   if(busy)return false;
   setBusy(true);
   try{
-    const r=await request('/api/simulate',next),result=await r.json();
+    const result=await request('/api/simulate',next);
     const validated=clone(lab.normalize(next,defaults));
     if(archive&&data)previousExperiment=clone(state);
     const priorTime=orbitTime(),smooth=playing&&data&&validated.elapsed>state.elapsed&&!matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -148,7 +150,10 @@ $('inject').onclick=async()=>{
 };
 $('demo').onclick=async()=>{pause();const next=clone(defaults);next.elapsed=600;next.faults=[{id:'demo-thermal',satellite:0,kind:'thermal',at:180,severity:1}];if(await refresh(next,{archive:true})){fillConfig();$('metric').value='temperature';drawChart();notice('과열 예제를 불러왔습니다. 오른쪽 권고의 모의 실행 → +5분으로 대응 효과를 확인하세요.');}};
 async function execute(faultId,kind){
-  if(busy)return;pause();const next=clone(state);next.actions.push({fault_id:faultId,kind,at:state.elapsed});
+  if(busy)return;pause();
+  const existing=state.actions.find(a=>a.fault_id===faultId);
+  if(existing){notice(existing.at>state.elapsed?`이 장애의 대응은 T+ ${clock(existing.at)}에 예정되어 있습니다.`:'이 장애의 대응은 이미 실행되었습니다.');return;}
+  const next=clone(state);next.actions.push({fault_id:faultId,kind,at:state.elapsed});
   if(await refresh(next))notice(`${catalog.actions[kind].name} 모의 명령을 실행했습니다. +5분을 눌러 복구 추이를 비교하세요.`);
 }
 $('filter').onchange=renderFleet;$('fleetSearch').oninput=renderFleet;$('fleetSort').onchange=renderFleet;$('metric').onchange=drawChart;
@@ -173,7 +178,7 @@ function setView(){
 $('guideButton').onclick=()=>$('guide').showModal();$('closeGuide').onclick=()=>$('guide').close();
 function download(blob,name){const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 $('save').onclick=()=>{pause();download(new Blob([JSON.stringify({format:'orbit-lab-v1',simulation:state},null,2)],{type:'application/json'}),'orbit-lab-experiment.json');notice('현재 설정·장애·대응 시각을 저장했습니다.');};
-$('csv').onclick=async()=>{pause();if(busy)return;setBusy(true);try{const r=await request('/api/export',state);download(await r.blob(),'satellite-telemetry.csv');notice('현재 시각의 전체 위성 텔레메트리를 저장했습니다.');}catch(e){notice(e.message,true);}finally{setBusy(false);}};
+$('csv').onclick=async()=>{pause();if(busy)return;setBusy(true);try{const blob=await request('/api/export',state,{responseType:'blob'});download(blob,'satellite-telemetry.csv');notice('현재 시각의 전체 위성 텔레메트리를 저장했습니다.');}catch(e){notice(e.name==='AbortError'?'응답이 지연되었습니다. 잠시 후 다시 시도하세요.':e.message,true);}finally{setBusy(false);}};
 $('load').onclick=()=>$('file').click();
 $('file').onchange=async e=>{pause();const f=e.target.files[0];if(!f)return;try{if(f.size>65536)throw Error('실험 파일은 64 KB 이하여야 합니다.');const simulation=lab.decode(await f.text());if(await refresh(simulation,{archive:true})){fillConfig();notice('저장한 실험을 복원했습니다.');}}catch(e){notice(e.message,true);}finally{e.target.value='';}};
 
@@ -199,15 +204,15 @@ function render(){
     const action=catalog.actions[a.action];
     el.innerHTML=`<strong>${escape(a.evidence)}</strong>${action?`<p>${escape(action.effect)}</p><small>${escape(action.tradeoff)}</small>`:'<p>원인 미확정 · 추세와 원시 관측값을 추가 확인하세요.</p>'}`;
     if(action){
-      const f=state.faults.find(f=>f.satellite===sat.id&&f.kind===a.kind&&f.at<=state.elapsed);
-      const done=f&&state.actions.some(x=>x.fault_id===f.id&&x.at<=state.elapsed);
-      if(f&&!done){const button=document.createElement('button');button.textContent=`모의 실행 · ${action.name}`;button.dataset.action=a.action;button.onclick=()=>execute(f.id,a.action);el.append(button);}
-      else{const p=document.createElement('p');p.className='footnote';p.textContent=done?'대응 실행됨 · 시간을 진행해 경과를 관찰하세요.':'연관 장애가 확인되지 않아 관측만 권고합니다.';el.append(p);}
+      const f=state.faults.find(f=>f.satellite===sat.id&&f.kind===a.kind);
+      const existing=f&&state.actions.find(x=>x.fault_id===f.id);
+      if(f&&f.at<=state.elapsed&&!existing){const button=document.createElement('button');button.textContent=`모의 실행 · ${action.name}`;button.dataset.action=a.action;button.onclick=()=>execute(f.id,a.action);el.append(button);}
+      else{const p=document.createElement('p');p.className='footnote';p.textContent=existing?(existing.at>state.elapsed?`대응 예정 · T+ ${clock(existing.at)}에 ${action.name}`:'대응 실행됨 · 시간을 진행해 경과를 관찰하세요.'):'연관 장애가 확인되지 않아 관측만 권고합니다.';el.append(p);}
     }
     recommendations.append(el);
   });
-  const applied=state.actions.filter(a=>a.at<=state.elapsed&&state.faults.some(f=>f.id===a.fault_id&&f.satellite===sat.id));
-  for(const a of applied){if(!sat.alerts.some(x=>x.action===a.kind)){const p=document.createElement('p');p.className='footnote';p.textContent=`${catalog.actions[a.kind].name} 실행 상태 · ${catalog.actions[a.kind].tradeoff}`;recommendations.append(p);}}
+  const actions=state.actions.filter(a=>state.faults.some(f=>f.id===a.fault_id&&f.satellite===sat.id));
+  for(const a of actions){if(!sat.alerts.some(x=>x.action===a.kind)){const p=document.createElement('p');p.className='footnote';p.textContent=a.at>state.elapsed?`대응 예정 · T+ ${clock(a.at)}에 ${catalog.actions[a.kind].name}`:`${catalog.actions[a.kind].name} 실행 상태 · ${catalog.actions[a.kind].tradeoff}`;recommendations.append(p);}}
   $('stations').innerHTML=data.stations.map(s=>`<div class="station"><span>${s.name}</span><div><b>${s.visible}</b><small>/ ${s.serviceable}</small></div></div>`).join('');
   const events=[...state.faults.map(f=>({at:f.at,text:`K-LEO ${String(f.satellite+1).padStart(3,'0')} · ${catalog.faults[f.kind].name} 주입`})),...state.actions.map(a=>({at:a.at,text:`${catalog.actions[a.kind].name} 실행 · ${state.faults.find(f=>f.id===a.fault_id)?.satellite+1}번 위성`}))].filter(e=>e.at<=state.elapsed).sort((a,b)=>b.at-a.at);
   $('eventCount').textContent=events.length;
@@ -215,13 +220,20 @@ function render(){
   renderFleet();drawOrbit();drawChart();
 }
 function renderFleet(){
-  if(!data)return;const fragment=document.createDocumentFragment();
+  if(!data)return;const fleet=$('fleet'),focused=document.activeElement;
+  const buttons=new Map(Array.from(fleet.children,b=>[Number(b.dataset.satellite),b]));
   const satellites=lab.fleet(data.satellites,{mode:$('filter').value,query:$('fleetSearch').value,sort:$('fleetSort').value});
   $('fleetCount').textContent=`${satellites.length} / ${data.satellites.length}기 표시 · 선택 ${data.selected.name}`;
-  for(const sat of satellites){
-    const b=document.createElement('button');b.textContent=String(sat.id+1).padStart(3,'0');b.className=sat.status+(sat.id===state.selected?' selected':'');
-    b.title=`${sat.name} · ${statusNames[sat.status]} · 이상지수 ${sat.risk}`;b.setAttribute('aria-label',b.title);b.setAttribute('aria-pressed',String(sat.id===state.selected));b.onclick=()=>selectSatellite(sat.id);fragment.append(b);
-  }$('fleetEmpty').hidden=fragment.childNodes.length>0;$('fleet').replaceChildren(fragment);
+  satellites.forEach((sat,index)=>{
+    let b=buttons.get(sat.id);
+    if(!b){b=document.createElement('button');b.dataset.satellite=String(sat.id);b.textContent=String(sat.id+1).padStart(3,'0');b.onclick=()=>selectSatellite(sat.id);}
+    buttons.delete(sat.id);b.className=sat.status+(sat.id===state.selected?' selected':'');
+    b.title=`${sat.name} · ${statusNames[sat.status]} · 이상지수 ${sat.risk}`;b.setAttribute('aria-label',b.title);b.setAttribute('aria-pressed',String(sat.id===state.selected));
+    if(fleet.children[index]!==b)fleet.insertBefore(b,fleet.children[index]??null);
+  });
+  for(const b of buttons.values())b.remove();
+  if(fleet.contains(focused)&&document.activeElement!==focused)focused.focus({preventScroll:true});
+  $('fleetEmpty').hidden=satellites.length>0;
 }
 function canvasSize(canvas){const r=canvas.getBoundingClientRect(),dpr=Math.min(devicePixelRatio||1,2);canvas.width=Math.round(r.width*dpr);canvas.height=Math.round(r.height*dpr);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);return {ctx,w:r.width,h:r.height,dpr};}
 function drawOrbit(){
@@ -310,7 +322,7 @@ new ResizeObserver(()=>{drawOrbit();drawChart();}).observe($('orbitCanvas'));
 new ResizeObserver(()=>drawChart()).observe($('chartCanvas'));
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&playing){pause();notice('화면을 벗어나 실험을 일시정지했습니다.');}});
 window.addEventListener('beforeunload',e=>{if(data&&!locallySaved){e.preventDefault();e.returnValue='';}});
-async function init(){try{const [r,map]=await Promise.all([fetch('/api/catalog'),fetch('/static/world.json')]);if(!r.ok)throw Error('엔진 연결 실패');catalog=await r.json();if(map.ok)world=(await map.json()).lines;
+async function init(){try{const [metadata,map]=await Promise.all([request('/api/catalog'),request('/static/world.json').catch(()=>({lines:[]}))]);catalog=metadata;world=map.lines;
   let saved=null,storageError=false;
   try{
     const raw=localStorage.getItem(lab.CURRENT);if(raw)saved=lab.decode(raw);

@@ -7,11 +7,12 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from engine import ACTIONS, FAULTS, FIELDS, detector, snapshot
+from engine import ACTIONS, FAULTS, FIELDS, current_snapshot, detector, snapshot
 
 BASE = Path(__file__).resolve().parent
 MAX_BODY_BYTES = 65536
@@ -90,6 +91,17 @@ async def lifespan(app):
 
 app = FastAPI(title='AI 위성 관제 실험실', version='1.0.0', lifespan=lifespan,
               docs_url=None, redoc_url=None)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError):
+    # Raw input/context can contain NaN, infinity or ValueError objects, which
+    # cannot be encoded as JSON. The UI only needs these stable error fields.
+    details = [{key: error[key] for key in ('type', 'loc', 'msg')}
+               for error in exc.errors()]
+    return JSONResponse({'detail': details}, status_code=422)
+
+
 # Snapshots are 40–150 KB of JSON and playback requests one per second; gzip cuts that about fivefold.
 # Registered before the body-limit middleware so it wraps the routes directly and sees whole bodies
 # (a streamed response from BaseHTTPMiddleware would be compressed regardless of minimum_size).
@@ -141,7 +153,7 @@ def simulate(req: SimulationRequest):
 
 @app.post('/api/export')
 def export(req: SimulationRequest):
-    data = snapshot(req)
+    data = current_snapshot(req)
     s = io.StringIO(newline='')
     w = csv.writer(s)
     w.writerow(['satellite','elapsed_s','altitude_km','inclination_deg','planes','per_plane','walker_f',

@@ -1,5 +1,7 @@
 @echo off
 cd /d "%~dp0"
+set OMP_NUM_THREADS=1
+set OPENBLAS_NUM_THREADS=1
 if not exist .venv\Scripts\python.exe py -3.12 -m venv .venv
 if errorlevel 1 goto error
 .venv\Scripts\python.exe -m pip install -r requirements.txt
