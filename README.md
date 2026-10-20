@@ -47,6 +47,8 @@ Windows PowerShell:
 
 ```powershell
 .venv\Scripts\python.exe -m pip install -r requirements.txt
+$env:OMP_NUM_THREADS = "1"
+$env:OPENBLAS_NUM_THREADS = "1"
 .venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -54,7 +56,7 @@ macOS / Linux:
 
 ```bash
 .venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
 브라우저에서 `http://localhost:8000`을 엽니다. 정적 지도와 차트 코드를 함께 제공하므로 실행 후 CDN·외부 지도 API·외부 AI 호출이 필요하지 않습니다.
@@ -148,12 +150,17 @@ Isolation Forest가 반환하는 점수의 의미는 [scikit-learn 공식 문서
 
 ## 7. 개발 및 검증
 
+Python 3.12 가상환경을 활성화한 뒤 선언된 의존성을 설치합니다. 기존 가상환경을 재사용할 때도 설치 단계를 실행해야 저장소와 같은 직접 의존성 버전으로 검증할 수 있습니다.
+
 ```bash
 python -m pip install -r requirements-dev.txt
+python -m pip check
 python -m pytest -q
 ```
 
-GitHub Actions(`.github/workflows/ci.yml`)가 PR과 main 푸시마다 Python 테스트와 Node 단위 테스트(`tests/state.test.cjs`, `tests/orbit.test.cjs`)를 실행합니다. 서버는 64 KB를 넘는 POST 본문을 `Content-Length`가 없는 분할 전송까지 포함해 413으로 거부하며, 이 동작과 보안 헤더도 테스트합니다. 1 KB 이상의 응답은 gzip으로 압축되어, 기본 128기 스냅샷이 약 38 KB에서 7.5 KB로 줄어듭니다.
+로컬 테스트에도 위 실행 안내와 같이 `OMP_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1`을 설정하면 CI·Render와 계산 스레드 설정이 같습니다. 직접 의존성은 `requirements*.txt`에 고정되어 있으며, 전이 의존성 전체를 고정하는 Python 잠금 파일은 아직 없습니다. 검증 결과를 기록할 때는 커밋과 `python -m pip freeze` 출력도 함께 보관하세요.
+
+GitHub Actions(`.github/workflows/ci.yml`)가 PR과 main 푸시마다 Python 테스트, Node 단위 테스트, JavaScript 구문 검사와 Chromium 브라우저 회귀 테스트를 실행합니다. 브라우저 검증은 로컬 서버의 `/healthz` 준비를 기다린 뒤 실행하며, 성공·실패 시 서버를 종료합니다. 서버는 64 KB를 넘는 POST 본문을 `Content-Length`가 없는 분할 전송까지 포함해 413으로 거부하며, 이 동작과 보안 헤더도 테스트합니다. 1 KB 이상의 응답은 gzip으로 압축되어, 기본 128기 스냅샷이 약 38 KB에서 7.5 KB로 줄어듭니다.
 
 API 명세는 `/openapi.json`에서 확인할 수 있습니다. 관제 화면은 외부 CDN 없이 동작합니다.
 
@@ -169,11 +176,24 @@ API 명세는 `/openapi.json`에서 확인할 수 있습니다. 관제 화면은
 
 ### 브라우저 기능 검증
 
-Node.js가 설치된 환경에서 `node --test tests/state.test.cjs`로 실험 파일·검색·정렬을 검증합니다.
-Playwright가 설치된 환경에서는 서버를 실행한 뒤 `node tests/dashboard.cjs`로 자동 복원, 되돌리기, 잘못된 입력 보존, 저장 공간 오류, 360·768·1024px 화면을 검증합니다. `PLAYWRIGHT_MODULE`에 설치된 Playwright 모듈 경로를, `ORBIT_LAB_URL`에 테스트 서버 주소를 지정할 수 있습니다(기본 `http://127.0.0.1:8000`). 테스트는 별도 브라우저 컨텍스트를 사용합니다.
+Node.js 22 이상에서 다음 명령을 실행합니다. `npm ci`는 `package-lock.json`에 고정된 Playwright를 설치합니다.
+
+```bash
+npm ci
+npm test
+npx playwright install chromium
+```
+
+Linux에서 브라우저 시스템 라이브러리도 설치해야 한다면 `npx playwright install --with-deps chromium`을 사용합니다. 앞의 실행 안내대로 별도 터미널에 서버를 실행한 뒤 다음 명령으로 브라우저 검증을 수행합니다.
+
+```bash
+npm run test:browser
+```
+
+이 명령은 `tests/dashboard.cjs`, `tests/orbit-browser.cjs`, `tests/frontend-regressions.cjs`를 차례로 실행합니다. 자동 복원, 되돌리기, 잘못된 입력 보존, 저장 공간 오류, 반응형 화면, Python/브라우저 좌표 일치 및 프론트엔드 회귀를 검증합니다. 기본 서버 주소는 모두 `http://127.0.0.1:8000`이며 다른 주소는 `ORBIT_LAB_URL` 환경변수로 지정합니다. 외부에 설치한 Playwright를 사용할 때는 `PLAYWRIGHT_MODULE`을 지정할 수 있습니다. 테스트는 별도 브라우저 컨텍스트를 사용합니다.
 
 ### 3D 궤도 확인
 
 3D 궤도에서 **모든 궤도면 / 선택 궤도면 / 숨기기**를 전환하고, 필요할 때 **지상궤적 함께 보기**를 켭니다. 청록 실선은 선택 궤도면, 황색 점선은 지상궤적이며 선택 위성과 직하점 사이에는 고도 연결선을 표시합니다. 평면도에서는 직하점과 지상궤적을 표시합니다. 재생 중 확인된 두 계산 시각 사이를 원궤도 수식으로 부드럽게 이동하며, 모션 감소 설정이나 일시정지에서는 확정 위치를 바로 표시합니다. 화면 하단의 궤도 시각은 애니메이션 중 표시 위치의 시각입니다.
 
-`node --test tests/orbit.test.cjs`로 고도 비율·지구 가림·궤도면·자전을 검증합니다. `node tests/orbit-browser.cjs`는 실행 중인 서버(기본 8766 포트, `ORBIT_LAB_URL`로 변경)를 대상으로 Python/브라우저 좌표 일치, 재생·선택·모바일 화면을 검증합니다. 이 표시는 기존 합성 Walker 원궤도 모델의 시각화이며 실제 위성 TLE나 실시간 추적 데이터는 사용하지 않습니다.
+`node --test tests/orbit.test.cjs`로 고도 비율·지구 가림·궤도면·자전을 검증합니다. `node tests/orbit-browser.cjs`는 실행 중인 서버(기본 8000 포트, `ORBIT_LAB_URL`로 변경)를 대상으로 Python/브라우저 좌표 일치, 재생·선택·모바일 화면을 검증합니다. 이 표시는 기존 합성 Walker 원궤도 모델의 시각화이며 실제 위성 TLE나 실시간 추적 데이터는 사용하지 않습니다.

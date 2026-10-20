@@ -5,7 +5,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
  try{
   const context=await browser.newContext({viewport:{width:1440,height:1050}}),page=await context.newPage(),errors=[];
   page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());
-  await page.goto(process.env.ORBIT_LAB_URL||'http://127.0.0.1:8766');
+  await page.goto(process.env.ORBIT_LAB_URL||'http://127.0.0.1:8000');
   await page.waitForFunction(()=>data?.orbit&&!busy);
   // Independent agreement with Python output, including retrograde and dense constellations.
   for(const config of [

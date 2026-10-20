@@ -64,15 +64,20 @@ def infer(values):
     return risk, z
 
 
-def geometry(cfg, elapsed, indices=None):
+def _orbital_phase(cfg, elapsed, ids):
     n = cfg.planes * cfg.per_plane
-    ids = np.arange(n) if indices is None else np.asarray(indices)
     plane, slot = ids // cfg.per_plane, ids % cfg.per_plane
     r = EARTH_KM + cfg.altitude
     period = 2*np.pi*math.sqrt(r**3/MU)
     # Walker Delta T/P/F: phase between adjacent planes = F * 360 / T.
-    raan = 2*np.pi*plane/cfg.planes
     u = 2*np.pi*slot/cfg.per_plane + 2*np.pi*cfg.phasing*plane/n + 2*np.pi*elapsed/period
+    return u, period
+
+
+def _positions(cfg, elapsed, ids):
+    r = EARTH_KM + cfg.altitude
+    raan = 2*np.pi*(ids // cfg.per_plane)/cfg.planes
+    u, period = _orbital_phase(cfg, elapsed, ids)
     inc = math.radians(cfg.inclination)
     x = r*(np.cos(raan)*np.cos(u)-np.sin(raan)*np.sin(u)*math.cos(inc))
     y = r*(np.sin(raan)*np.cos(u)+np.cos(raan)*np.sin(u)*math.cos(inc))
@@ -82,6 +87,13 @@ def geometry(cfg, elapsed, indices=None):
     ecef = np.column_stack([x*np.cos(theta)+y*np.sin(theta), -x*np.sin(theta)+y*np.cos(theta), z])
     lat = np.degrees(np.arcsin(ecef[:, 2]/r))
     lon = np.degrees(np.arctan2(ecef[:, 1], ecef[:, 0]))
+    return lat, lon, ecef, u, period
+
+
+def geometry(cfg, elapsed, indices=None):
+    n = cfg.planes * cfg.per_plane
+    ids = np.arange(n) if indices is None else np.asarray(indices)
+    lat, lon, ecef, u, period = _positions(cfg, elapsed, ids)
     elevations = []
     for site in STATIONS:
         a, b = math.radians(site['lat']), math.radians(site['lon'])
@@ -91,14 +103,20 @@ def geometry(cfg, elapsed, indices=None):
     return lat, lon, np.array(elevations).T, u, period
 
 
-def telemetry(req, elapsed, indices=None, apply_actions=True):
+def _nominal_telemetry(req, elapsed, ids, phase=None):
     n = req.config.planes*req.config.per_plane
-    ids = np.arange(n) if indices is None else np.asarray(indices)
-    _, _, _, phase, _ = geometry(req.config, elapsed, ids)
+    if phase is None:
+        phase, _ = _orbital_phase(req.config, elapsed, ids)
     # Time-bin seeding makes exports, replays and branches exactly comparable.
+    # Keep the full RNG sequence so selecting a satellite never changes its noise.
     rng = np.random.default_rng(np.random.SeedSequence([req.seed, int(elapsed//10)]))
     noise = rng.normal(size=(n, 6))[ids]
-    v = normal_values(phase, noise)
+    return normal_values(phase, noise)
+
+
+def _apply_effects(req, elapsed, ids, nominal, apply_actions=True):
+    # Actual and counterfactual branches share nominal input, but never mutations.
+    v = nominal.copy()
     capacity = np.ones(len(ids))
     for f in req.faults:
         if elapsed < f.at:
@@ -143,6 +161,13 @@ def telemetry(req, elapsed, indices=None, apply_actions=True):
     return v, capacity
 
 
+def telemetry(req, elapsed, indices=None, apply_actions=True):
+    n = req.config.planes*req.config.per_plane
+    ids = np.arange(n) if indices is None else np.asarray(indices)
+    nominal = _nominal_telemetry(req, elapsed, ids)
+    return _apply_effects(req, elapsed, ids, nominal, apply_actions)
+
+
 def diagnose(v, risk):
     """Rule explanations depend on telemetry, never on injected fault metadata."""
     alerts = []
@@ -162,10 +187,13 @@ def diagnose(v, risk):
     return status, alerts
 
 
-def snapshot(req):
+def current_snapshot(req):
+    """Compute current constellation data without selected-satellite history/track."""
     cfg, t = req.config, req.elapsed
-    lat, lon, elev, _, period = geometry(cfg, t)
-    values, cap = telemetry(req, t)
+    lat, lon, elev, phase, period = geometry(cfg, t)
+    ids = np.arange(cfg.planes*cfg.per_plane)
+    nominal = _nominal_telemetry(req, t, ids, phase)
+    values, cap = _apply_effects(req, t, ids, nominal)
     risk, z = infer(values)
     statuses, diagnoses = zip(*(diagnose(v, r) for v, r in zip(values, risk)))
     sats = []
@@ -178,34 +206,50 @@ def snapshot(req):
                      'elevation':round(float(elev[i,0]),1),
                      'visible':bool(elev[i,0]>=cfg.min_elevation), 'alerts':diagnoses[i]})
     chosen = req.selected
-    times = np.arange(max(0, t-1200), t+.01, 30)
-    if len(times)==0 or times[-1] != t:
-        times = np.append(times, t)
-    actual, counter, actual_cap, counter_cap = [], [], [], []
-    for when in times:
-        a, ca = telemetry(req, float(when), [chosen])
-        b, cb = telemetry(req, float(when), [chosen], apply_actions=False)
-        actual.append(a[0]); counter.append(b[0]); actual_cap.append(ca[0]); counter_cap.append(cb[0])
-    a_risk, _ = infer(np.array(actual))
-    b_risk, _ = infer(np.array(counter))
-    history = [{'time':round(float(tm),1), 'values':{k:round(float(x),3) for k,x in zip(FIELDS,a)},
-                'unmitigated':{k:round(float(x),3) for k,x in zip(FIELDS,b)},
-                'risk':round(float(ar),1), 'unmitigated_risk':round(float(br),1),
-                'capacity':round(float(ac)*100,1), 'unmitigated_capacity':round(float(bc)*100,1)}
-               for tm,a,b,ar,br,ac,bc in zip(times,actual,counter,a_risk,b_risk,actual_cap,counter_cap)]
     top = np.argsort(z[chosen])[::-1][:3]
     contributors = [{'field':FIELDS[j], 'label':LABELS[j], 'deviation':round(float(z[chosen,j]),1)} for j in top]
     stations = [{**site,'visible':int(np.sum(elev[:,j]>=cfg.min_elevation)),
                  'serviceable':int(np.sum((elev[:,j]>=cfg.min_elevation)&(cap>=.5)))} for j,site in enumerate(STATIONS)]
-    tracks=[]
-    for dt in np.linspace(0, period, 97):
-        a,b,_,_,_=geometry(cfg,t+float(dt),[chosen])
-        tracks.append([round(float(a[0]),3),round(float(b[0]),3)])
-    return {'elapsed':t,'satellites':sats,'selected':sats[chosen],'history':history,
+    return {'elapsed':t,'satellites':sats,'selected':sats[chosen],
             'orbit':{'earth_radius_km':EARTH_KM,'rotation_rate':ROTATION,'period_seconds':period},
-            'contributors':contributors, 'stations':stations, 'track':tracks,
+            'contributors':contributors, 'stations':stations,
             'summary':{'total':len(sats),'normal':statuses.count('normal'),
                        'warning':statuses.count('warning'),'critical':statuses.count('critical'),
                        'mean_capacity':round(float(np.mean(cap))*100,1),'period_minutes':round(period/60,2)},
             'model':{'name':'Isolation Forest','training_samples':6000,'risk_threshold':70,
                      'note':'합성 정상 데이터 기반 상대 이상지수. 고장 확률이 아닙니다.'}}
+
+
+def _history(req):
+    t, chosen = req.elapsed, req.selected
+    # Exclude the endpoint, then append its exact input value once. A tolerance
+    # above t can include a future fault or action when t is just below a sample.
+    times = np.arange(max(0, t-1200), t, 30)
+    times = np.append(times[times < t], t)
+    ids = np.array([chosen])
+    actual, counter, actual_cap, counter_cap = [], [], [], []
+    for when in times:
+        nominal = _nominal_telemetry(req, float(when), ids)
+        a, ca = _apply_effects(req, float(when), ids, nominal)
+        b, cb = _apply_effects(req, float(when), ids, nominal, apply_actions=False)
+        actual.append(a[0]); counter.append(b[0]); actual_cap.append(ca[0]); counter_cap.append(cb[0])
+    a_risk, _ = infer(np.array(actual))
+    b_risk, _ = infer(np.array(counter))
+    return [{'time':float(tm), 'values':{k:round(float(x),3) for k,x in zip(FIELDS,a)},
+                'unmitigated':{k:round(float(x),3) for k,x in zip(FIELDS,b)},
+                'risk':round(float(ar),1), 'unmitigated_risk':round(float(br),1),
+                'capacity':round(float(ac)*100,1), 'unmitigated_capacity':round(float(bc)*100,1)}
+               for tm,a,b,ar,br,ac,bc in zip(times,actual,counter,a_risk,b_risk,actual_cap,counter_cap)]
+
+
+def snapshot(req):
+    data = current_snapshot(req)
+    data['history'] = _history(req)
+    period = data['orbit']['period_seconds']
+    ids = np.array([req.selected])
+    tracks=[]
+    for dt in np.linspace(0, period, 97):
+        a,b,_,_,_=_positions(req.config, req.elapsed+float(dt), ids)
+        tracks.append([round(float(a[0]),3),round(float(b[0]),3)])
+    data['track'] = tracks
+    return data
